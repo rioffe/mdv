@@ -100,3 +100,250 @@ Sources are cited as `[Help §…]`, `[README]`, `[NOTES]`, or a file path in `m
 | **R-34** | `make` (default) MUST build a runnable `build/mdv.app` from a clean checkout with only the Swift toolchain, copying every resource the app needs (C-13); `make install` MUST place it in `/Applications`, register it with LaunchServices, and symlink the CLI; `make dist` MUST refuse to run unless `HEAD` carries an exact `vX.Y.Z` tag. `[Makefile; build.sh]` |
 | **R-35** | The application MUST NOT print document content, file contents, or query strings to any log at any verbosity. The only diagnostics it emits are `NSLog` lines on persistence-store failures (E-12) and the font-registration lines SwiftMath prints once per font on first use. |
 | **R-36** | The application MUST NOT crash on any document: a repair layer failure MUST degrade to the fallback of R-10/R-14, and every path that reaches a third-party parser MUST be preceded by the sanitisation that keeps that parser inside its asserted invariants (E-01). `[NOTES §Mermaid: ELK layout asserts]` |
+
+## 3. Behavior and state model
+
+### 3.1 Document lifecycle
+
+A window holds at most one **current document**. Its states and transitions:
+
+| State | Meaning | Enters via | Leaves via |
+| ----- | ------- | ---------- | ---------- |
+| `EMPTY` | No file loaded; the drop target / Open… prompt is shown. | launch with no file; history cleared | any open route (R-01) → `LOADING` |
+| `LOADING` | File read from disk, split into blocks (C-02), history row added (R-20), file indexed (R-26), scroll anchor looked up (R-06). | open route | success → `VIEWING`; unreadable file → `EMPTY` (E-03) |
+| `VIEWING` | Blocks rendered lazily; watcher armed (R-05); find/TOC/bookmarks operate on the cached split. | `LOADING` | open of another file → `LOADING`; file changed on disk → `RELOADING`; window close → `CLOSED` |
+| `RELOADING` | New content replaces `rawMarkdown` in place; scroll position kept; selection cleared. | watcher event, coalesced 50 ms | → `VIEWING` |
+| `CLOSED` | Scroll position persisted (R-06); watcher cancelled. | window close, quit | terminal |
+
+```mermaid
+stateDiagram-v2
+    [*] --> EMPTY
+    EMPTY --> LOADING : open route (R-01)
+    LOADING --> VIEWING : read + split OK (R-04)
+    LOADING --> EMPTY : unreadable (E-03)
+    VIEWING --> LOADING : open another file (R-01)
+    VIEWING --> RELOADING : file changed on disk (R-05)
+    RELOADING --> VIEWING : content swapped, position kept
+    VIEWING --> CLOSED : window close / quit (R-06)
+    CLOSED --> [*]
+```
+
+*Figure 3.1 — document lifecycle per R-01, R-04..R-06, E-03. The table is normative; the diagram is illustrative.*
+
+### 3.2 Render pipeline for one block
+
+Every visible block goes through the same path on each render (the split itself happens once per load, R-04):
+
+```mermaid
+flowchart LR
+    B["block source (C-02)"] --> F{"fenced code?"}
+    F -->|"mermaid"| M["MDVMermaidPipeline (C-06)"]
+    F -->|"other / none"| TS["CodeRenderer: tree-sitter (C-05)"]
+    F -->|"prose"| MR["MathMarkdown.rewrite (C-07.1)"]
+    MR --> ST["smartenMarkdown (C-10), if enabled"]
+    ST --> MU["MarkdownUI: cmark-gfm → SwiftUI"]
+    MU --> IP["image providers: local / data: / remote-gated (R-16) / mdv-math (C-07)"]
+    M --> IMG["NSImage at display width (R-11)"]
+    TS --> AS["AttributedString, cached by (lang, theme, code)"]
+```
+
+*Figure 3.2 — per-block render path per R-07..R-17. Each edge corresponds to a §4 contract; the diagram is illustrative.*
+
+Order matters in one place and is normative: **math rewriting precedes smart typography** (R-17), so that `--`, `...`, and quotes inside `$…$` are never curled or dashed.
+
+### 3.3 Durable artifacts
+
+| Artifact | Location | Written when | Read when |
+| -------- | -------- | ------------ | --------- |
+| History list | `UserDefaults["mdv_history"]` (JSON, ≤ 100 entries) | every open, delete, clear | launch |
+| Full-text index | `mdv.db` tables `articles`, `articles_fts` (C-03) | every open (mtime-gated), launch re-index | ⌘⇧F search |
+| Bookmarks | `mdv.db` table `bookmarks` (C-08) | ⌘D, reorder, remove | launch, Bookmarks menu, inspector |
+| Scroll positions | `mdv.db` table `scroll_positions` (C-08) | window close / quit / file switch | file load |
+| Preferences | `UserDefaults` keys in C-04 | on change | launch |
+| Help file | `~/Library/Application Support/mdv/Help.md` | first ⌘? per launch (copied from the bundle) | ⌘? |
+| Render caches | in-memory only: code `AttributedString` (256 entries), math images (2048), Mermaid layouts (96) and rasters (192, ≤ 192 MB) | render | render |
+
+`mdv.db` MUST be opened with `SQLITE_OPEN_FULLMUTEX`, `journal_mode = WAL`, `synchronous = NORMAL` (I-006).
+
+## 4. Interfaces / contracts
+
+### C-01 Application bundle and document types
+
+```
+mdv.app/
+  Contents/Info.plist        CFBundleIdentifier com.mdv.app, LSMinimumSystemVersion 13.0,
+                             CFBundleShortVersionString 1.0.0
+                             CFBundleDocumentTypes: extensions [md, markdown];
+                             LSItemContentTypes [net.daringfireball.markdown, public.plain-text]
+  Contents/MacOS/mdv         SwiftPM executable
+  Contents/Resources/        AppIcon.icns · *.otf (Alegreya, Besley, OpenDyslexic) ·
+                             *-highlights.scm (9) · mathFonts.bundle/ (Latin Modern Math + plist)
+                             · mdv (CLI script, for "Install Command Line Tool…") · Help.md
+Entitlements: app-sandbox = false; files.user-selected.read-only = true
+```
+
+### C-02 Document split: `ParsedDocument`
+
+```swift
+struct ParsedDocument {            // computed once per load (R-04); equality on `raw`
+    let raw: String
+    let blocks: [String]           // see rules
+    let tocHeadings: [TOCHeading]  // level 1…3, single-line ATX only
+}
+struct TOCHeading { level: Int; text: String /*display*/; slugText: String /*for #fragment*/; blockIndex: Int }
+```
+
+Split rules (normative):
+
+1. Input is split on `\n`. A **blank line** (only whitespace) ends the current block.
+2. A line whose first non-space characters are ` ``` ` or `~~~` opens a **fence**; blank lines inside a fence do not split; the fence closes at the next line starting (after spaces) with the same marker.
+3. A line whose first non-space characters are `$$`, with no second `$$` on the same line, opens a **math fence**; it closes at the next line *containing* `$$`.
+4. Leading/trailing newlines of a block are trimmed; empty blocks are dropped.
+5. `tocHeadings` contains each block whose trimmed text starts with `# `, `## `, or `### ` and is not a fence, using its first line only. `text` is the line with inline Markdown stripped (C-12 rules) and math converted per C-07.3; `slugText` is the same without the math conversion.
+
+### C-03 Full-text index
+
+```sql
+CREATE TABLE articles (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, filename TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '', indexed_at INTEGER NOT NULL,
+    file_mtime INTEGER NOT NULL DEFAULT 0, file_size INTEGER NOT NULL DEFAULT 0);
+CREATE VIRTUAL TABLE articles_fts USING fts5(filename, content, path UNINDEXED,
+    content='articles', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+-- triggers keep articles_fts in step with INSERT/UPDATE/DELETE on articles
+```
+
+Query construction: split the input on whitespace; drop the characters `" ( ) : * ^` from each token; wrap each remaining token as `"token"*`; join with spaces (FTS5 implicit AND). Results: `ORDER BY rank LIMIT 80`, with `snippet(articles_fts, 1, char(2), char(3), '…', 14)` — U+0002/U+0003 bracket matched terms and the UI renders them highlighted.
+
+### C-04 Preferences (`UserDefaults`)
+
+| Key | Type | Default | Meaning |
+| --- | ---- | ------- | ------- |
+| `mdv_theme_id` | String | `high-contrast` | Theme id or `system` (R-29) |
+| `mdv_font_scale` | Double | `1.0` | Zoom factor (R-30), clamped on read |
+| `mdv_smart_typography` | Bool | `true` | View → Smart Typography (R-17) |
+| `mdv_load_remote_images` | Bool | `false` | View → Load Remote Images (R-16) |
+| `mdv_sidebar_collapsed` | Bool | `false` | History sidebar hidden (R-20) |
+| `mdv_inspector_visible` | Bool | `false` | TOC/bookmarks inspector shown (R-21) |
+| `mdv_inspector_width` | Double | `240` | Inspector width, clamped to $[180, 520]$ |
+| `mdv_bookmarks_expanded` | Bool | — | Bookmarks pane open |
+| `mdv_bookmarks_height` | Double | — | Bookmarks pane height, clamped at use |
+| `mdv_editor_app_path` | String | `""` | External editor bundle path (R-23) |
+| `mdv_history` | Data (JSON) | `[]` | History entries (R-20) |
+| `mdv.mermaid.style` | String | `document` | Diagram style (R-09) |
+
+### C-05 Code highlighting: `CodeRenderer`
+
+```swift
+func render(code: String, languageHint: String?, theme: MDVTheme) -> AttributedString   // synchronous, never throws
+```
+
+- Language resolution: lower-case the info string, keep its first word; direct names `c go rust bash javascript yaml toml python ruby`; aliases `js jsx javascriptreact node → javascript`, `sh zsh shell → bash`, `py python3 → python`, `rb → ruby`, `yml → yaml`, `rs → rust`, `golang → go`, `h objective-c objc → c`; anything else → plain.
+- Highlighting: parse with a fresh `Parser` per call, run the grammar's `highlights.scm`, colour each capture from the theme's `CodePalette` by capture-name components; `comment` captures are italic. If the query fails to compile, that language falls back to plain for the rest of the session.
+- Result cache: key `(language, theme id, hash(code))`, at most 256 entries.
+
+### C-06 Mermaid pipeline: `MDVMermaidPipeline`
+
+```swift
+static func prepare(source: String, theme: DiagramTheme) throws -> MDVMermaidPrepared  // parse → repair → layout (ELK)
+static func rasterize(_ p: MDVMermaidPrepared, width: CGFloat, scale: CGFloat) -> NSImage?  // CoreText at final size, upright
+static func displaySize(for p: MDVMermaidPrepared, width: CGFloat) -> CGSize  // whole points; shared by view and raster
+```
+
+**C-06.1 Source sanitisation (before parsing), in this order:**
+
+| # | Rule | Reason |
+| - | ---- | ------ |
+| 1 | Drop a leading YAML front-matter block (`---` … `---`). | parser rejects it (`invalidHeader`) |
+| 2 | xychart: `line "name" [...]`/`bar "name" [...]` → `line [...]`/`bar [...]`. | parser knows only the unnamed form |
+| 3 | On `style`/`classDef`/`linkStyle` lines: expand `#rgb`/`#rgba` to 6/8 digits; map CSS colour names (white, black, red, … transparent) to hex. | 3-digit hex and names render **black** |
+| 4 | stateDiagram: fold every `ID: text` description line for an ID into one `state "a<br/>b" as ID` alias inserted after the header. | parser keeps only the first registration |
+| 5 | `id[/text/]` and `id[\text\]` (parallelograms) → `id[text]`. | not in the parser's shape table |
+| 6 | Strip inline formatting tags `<b> <i> <u> <s> <strong> <em> <small> <sup> <sub> <span> <code> <tt> <font> <mark>` (open and close), keeping their content; leave `<br/>`. | rendered literally |
+
+**C-06.2 Post-parse and post-layout repairs:**
+
+| Diagram | Repair |
+| ------- | ------ |
+| flowchart, stateDiagram | Subgraph ownership: a node listed in several subgraphs belongs to the **last** one (Mermaid.js semantics); it is removed from the others. (Prevents the ELK `assert`, E-01.) |
+| stateDiagram | `classDef`, `class A,B name`, and `style` lines read from the source are applied to the model (`classDefs`, `classAssignments`, `nodeStyles`). |
+| flowchart, stateDiagram | Whole-label `$$…$$` nodes: label replaced by a blank placeholder measured to the math image's size; image composited after rasterising, centred, at a pixel-snapped origin (R-15, I-009). |
+| sequenceDiagram | `<br>` → newline in notes; → space in actor labels; message labels with `<br>` are blanked and drawn by mdv, lines stacked upward from the arrow (13 pt pitch, 11 pt font, muted colour). |
+| sequenceDiagram | Actor gaps widened until every message label fits between its endpoints (+ 24 pt; self-messages + 36 pt); all x coordinates remapped piecewise-linearly through old→new actor centres. |
+| sequenceDiagram | Multi-line message rows: the message and everything below shifted down $(n-1) \times 13 + 4$ pt; spanning blocks, lifelines, and the diagram height grow. |
+| sequenceDiagram | A block whose last item is a note is extended to enclose it (+ 8 pt). `autonumber` draws a filled disc (r = 8 pt) with the 1-based index at each arrow's tail. |
+
+**C-06.3 Document theme.** The *Document* style derives a `DiagramTheme` from the active `MDVTheme`: background = code-block background, foreground = text colour, node surface = page colour mixed 25 % toward the code background on light themes (lifted 16 % toward foreground on dark), lines/borders/muted = fixed mixes of background and foreground.
+
+### C-07 LaTeX math
+
+**C-07.1 Rewriting.** `MathMarkdown.rewrite(block, fontSize, headingSizeEms, color)` replaces each math span in a prose block with an image reference
+
+```
+![](mdv-math://inline/<base64url(latex)>?s=<size pt, 1 decimal>&c=<RRGGBBAA>)     // $…$, or $$…$$ mid-line
+![](mdv-math://display/<base64url(latex)>?s=…&c=…)                                // $$…$$
+```
+
+A `$$…$$` whose opening is at line start and closing at line end is emitted as its **own paragraph** (blank lines inserted, indentation preserved) so MarkdownUI's block-image path renders it centred via `MathDisplayView`; every other span is an inline image via `MathInlineImageProvider`. Delimiter rules (Pandoc `tex_math_dollars`): an opening `$` is followed by non-whitespace; a closing `$` is preceded by non-whitespace and not followed by a digit; a span contains no bare `$` and never crosses a backtick; `\$` is literal; fenced blocks and inline code are never rewritten; an empty `$$` pair is literal.
+
+**C-07.2 Typesetting.** `MathImageCache.rendered(for: MathSpec)` typesets with `MathImage(latex, fontSize, textColor, labelMode: display ? .display : .text)` after (a) registering the extra symbols and (b) applying the rewrites below, and bakes the result to a bitmap at the screen scale (I-008). Cache: 2048 entries keyed by the URL.
+
+| (a) Registered symbols (Latin Modern Math has the glyphs) | (b) Command rewrites (regex, in order) |
+| --- | --- |
+| relations: `gtrsim lesssim gtrapprox lessapprox leqslant geqslant lll ggg nless ngtr nleq ngeq doteq triangleq therefore because implies impliedby models vDash Vdash nparallel nmid subsetneq supsetneq nsubseteq nsupseteq sqsubseteq sqsupseteq precsim succsim`; arrows: `hookrightarrow hookleftarrow rightharpoonup leftharpoonup rightleftharpoons leftrightharpoons nearrow searrow swarrow nwarrow longmapsto twoheadrightarrow rightsquigarrow leadsto rightrightarrows leftleftarrows`; ordinary: `dots dotsc dotsb varnothing hslash mho Box square blacksquare bigstar checkmark ddagger S P pounds copyright degree beth gimel wp nexists complement # _`; big operators: `iint iiint oiint bigsqcup bigodot bigotimes biguplus`; binary: `intercal leftthreetimes rightthreetimes divideontimes` | `\operatorname*{X}` → `\mathrm{X}`; `\dfrac`/`\tfrac` → `\frac`; `\boldsymbol` → `\bm`; `\bmod` → `\;\mathrm{mod}\;`; `\pmod{n}` → `\;(\mathrm{mod}\;n)`; `\not=` → `\neq`; `\big \Big \bigg \Bigg` (with optional `l r m`) before a delimiter → removed; `\coloneqq` → `:=`; `align*`/`equation*`/`gather*`/`multline*` → unstarred; `align` → `aligned`; `multline` → `gather`; `\begin{equation}`/`\end{equation}` → removed |
+
+`\boxed{…}` is implemented in the vendored SwiftMath (`MTBoxed` atom, `MTBoxDisplay`: frame of fraction-rule thickness with $0.35\,\mathrm{em}$ padding). Unsupported and shown as source: `\underbrace`, `\overbrace`, `\stackrel`, `\substack`, `\&`.
+
+**C-07.3 Plain-text form** (`MathMarkdown.plainText`), used by the TOC, bookmark titles, and mixed Mermaid labels: same delimiter rules; `\frac{a}{b}` → `a/b`, `\sqrt{x}` → `√x`, wrappers (`\text \mathrm \mathbf \mathit \mathcal \mathbb \operatorname \boldsymbol \bm \hat \vec \bar \tilde`) → their content; `^`/`_` followed by a character or `{…}` → Unicode super/subscript when every character has one (digits, `+ - n i` / `+ - i j n k x`), else kept verbatim; Greek letters, common relations/operators/arrows/sets → Unicode; unknown commands → their name; braces removed; whitespace collapsed.
+
+### C-08 Anchors: bookmarks and scroll positions
+
+```sql
+CREATE TABLE bookmarks (id INTEGER PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL,
+    sort_order INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    block_index INTEGER NOT NULL DEFAULT 0, block_fingerprint TEXT NOT NULL DEFAULT '');
+CREATE TABLE scroll_positions (path TEXT PRIMARY KEY, block_index INTEGER NOT NULL,
+    block_fingerprint TEXT NOT NULL, updated_at INTEGER NOT NULL, file_mtime INTEGER NOT NULL DEFAULT 0);
+```
+
+`fingerprint(block)` = the block's words joined by single spaces, lower-cased, truncated to 80 characters. `resolve(blocks, storedIndex, fingerprint)` = the first block whose fingerprint equals the stored one; else `storedIndex` clamped to $[0, |\mathrm{blocks}|-1]$; else 0 for an empty document. A scroll position is restored only when the stored anchor resolves **and** the file's modification time is within 1 s of the stored `file_mtime` **and** the index is in bounds (E-08).
+
+### C-09 Theme contract (`MDVTheme`), the fields behaviour depends on
+
+```swift
+struct MDVTheme {
+    let id: String; let isDark: Bool
+    let text, secondaryText, tertiaryText, heading, strong, link, accent, background, secondaryBackground, border, divider, blockquoteBar: Color
+    var bodyFontFamily: FontFamily; var baseFontSize: CGFloat            // default 16
+    var h1SizeEm = 1.75, h2SizeEm = 1.4, h3SizeEm = 1.15; h4SizeEm 1.0, h5SizeEm 0.875, h6SizeEm 0.85 (fixed)
+    var headingSizeEms: [CGFloat]     // [h1…h6], used by markdownTheme and by math in headings (R-13)
+    var articleMaxWidth: CGFloat?; var articleHorizontalPadding: CGFloat
+    var smartTypographyAllowed: Bool  // false for phosphor, standard-erin-light, standard-erin-dark
+    var codePalette: CodePalette?     // default: oneDark (dark) / githubLight (light)
+}
+static let all = [highContrast, sevilla, charcoal, solariumDaylight, solariumMoonlight, phosphor, twilight, standardErinLight, standardErinDark]
+```
+
+Code blocks always use the system monospace face regardless of `bodyFontFamily` (`TYPOGRAPHY.md`).
+
+### C-10 Smart typography (`smartenMarkdown`)
+
+Applied to one block; the block is returned unchanged if it is a fence, looks like a GFM table (a `|---|` separator row), or is a thematic-break line. Otherwise, outside inline code spans (a run of *n* backticks closes only on a run of exactly *n*), link/image URL parts (`](` … matching `)`), and `<…>` spans: `"` and `'` → directional quotes chosen from the preceding character; `---` → `—`; `--` between letters/digits → `–`; ` -- ` → ` — `; other `--` runs unchanged (CLI flags survive); `...` → `…`.
+
+### C-11 Heading slug
+
+`slug(s)` = lower-case `s`; keep letters and digits; keep `-` and `_` when something precedes them; collapse runs of whitespace into one `-`; strip trailing `-`/`_`. Applied to both the link fragment and `TOCHeading.slugText`; equality selects the target.
+
+### C-12 Section and inline-stripped text
+
+`section(headingAt i)` = blocks $[i, j)$ where $j$ is the index of the next heading with level $\leq$ the level of $i$, or the block count. Copy output = those blocks joined with `\n\n`. `stripInlineMarkdown` removes trailing `#`s, `**`, `__`, backticks, unescaped `*`, word-internal `_…_` markers, and reduces `[text](url)` to `text`.
+
+### C-13 Build outputs (`build.sh`)
+
+```
+swift build -c {debug|release}
+build/mdv.app/Contents/{MacOS/mdv, Info.plist, Resources/{AppIcon.icns, *.otf, *-highlights.scm,
+                        mathFonts.bundle/, mdv, Help.md}}
+codesign --force --sign - --entitlements mdv/mdv.entitlements build/mdv.app     # ad hoc
+```
+
+The vendored SwiftMath resolves `mathFonts.bundle` from `Bundle.main` first and from `Vendor/SwiftMath/mathFonts.bundle` (by `#filePath`) when running unbundled (`swift run`).
