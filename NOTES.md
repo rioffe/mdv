@@ -19,6 +19,14 @@ library's public steps separately (parse → layout → render) and, in
 between, normalizes subgraph ownership so each node belongs only to the
 last subgraph that mentioned it. Applies to flowcharts and state diagrams.
 
+**Also handled in `MDVMermaidPipeline.sanitize`:** YAML front matter
+(`---\nconfig: …\n---`) is dropped — the parser fails with
+`invalidHeader("---")` and the library has no wrapping-width option to
+honour anyway — and inline HTML formatting tags in labels (`<b>`, `<i>`,
+`<code>`, …) are stripped, since they otherwise render literally. Diagram
+types the library lacks (`timeline`, `gantt`, `pie`, `mindmap`, …) show the
+"could not be rendered" fallback with the source.
+
 **Still true:**
 - Other ELK `assert`s may exist for other malformed diagrams. `make` builds
   debug (asserts on); a release build strips them.

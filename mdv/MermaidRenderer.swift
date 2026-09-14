@@ -410,7 +410,7 @@ final class MDVMermaidImageCache {
 // which is uncatchable and takes the whole app down.
 enum MDVMermaidPipeline {
     static func renderImage(source: String, theme: DiagramTheme, scale: CGFloat) throws -> NSImage? {
-        let graph = try MermaidParser.parse(source)
+        let graph = try MermaidParser.parse(sanitize(source))
         switch graph.typedPayload {
         case .flowchart(let model), .stateDiagram(let model):
             normalizeSubgraphOwnership(model)
@@ -419,6 +419,32 @@ enum MDVMermaidPipeline {
         }
         let positioned = try GraphLayout().layout(graph)
         return MermaidImageRenderer(theme: theme).renderImage(from: positioned, scale: scale)
+    }
+
+    /// Two things Mermaid.js accepts that BeautifulMermaid's parser doesn't:
+    ///
+    /// - A YAML front-matter block (`---\nconfig: …\n---`) before the
+    ///   diagram type. It only carries config we can't honour anyway
+    ///   (`wrappingWidth`, themes), so drop it rather than fail with
+    ///   `invalidHeader("---")`.
+    /// - Inline HTML formatting in labels (`<b>`, `<i>`, `<code>`, …).
+    ///   The parser passes those through as literal text. Strip the tags
+    ///   and keep the content; `<br/>` is understood and left alone.
+    static func sanitize(_ source: String) -> String {
+        var lines = source.components(separatedBy: "\n")
+        // Front matter: leading `---` line … next `---` line.
+        if let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+           lines[first].trimmingCharacters(in: .whitespaces) == "---",
+           let close = lines[(first + 1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) {
+            lines.removeSubrange(first...close)
+        }
+        let joined = lines.joined(separator: "\n")
+        guard joined.contains("<") else { return joined }
+        return joined.replacingOccurrences(
+            of: #"</?(?:b|i|u|s|strong|em|small|sup|sub|span|code|tt|font|mark)(?:\s[^<>]*)?>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
     }
 
     // The parser lets a node be claimed by several subgraphs (e.g. `A --> B`
