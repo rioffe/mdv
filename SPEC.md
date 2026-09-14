@@ -473,3 +473,204 @@ CI (`.github/workflows/build.yml`): on every push to `main`, build `debug` and `
 | **E-18** | ⌘F while the history sidebar has focus. | Routes to global search (R-24), not the document find bar. |
 | **E-19** | Reload of the current file while a block selection exists. | Selection cleared; scroll position kept. |
 | **E-20** | Same file opened in two windows and edited on disk. | Each window's watcher reloads independently; scroll positions are per path, last writer wins. |
+
+## 9. Acceptance criteria, tests, and evals
+
+The repository has **no automated test target** (D-01). Every test below is a reproducible manual or scripted check against `build/mdv.app` or the offscreen harness described in `NOTES.md` (a scratch SwiftPM package that links the same pipeline code and renders to PNG). "Renders" means: no fallback block, no crash report in `~/Library/Logs/DiagnosticReports/mdv-*.ips`.
+
+### 9.1 Build, bundle, launcher (scripted)
+
+| ID | Test |
+| -- | ---- |
+| **T-01** | Fresh clone, `make` → `build/mdv.app` exists with every file in C-13 present; `codesign --verify --deep --strict build/mdv.app` exits 0. Proves R-34, K-12, C-01, C-13. |
+| **T-02** | `make dist` on a commit without an exact `vX.Y.Z` tag exits non-zero at `check-version` before building. Proves R-34, K-11. |
+| **T-03** | `bin/mdv --version` prints `1.0.0`; `bin/mdv nope.md` prints `mdv: no such file: nope.md` to stderr and exits 1; `echo '# hi' \| bin/mdv -` opens a window showing "hi"; `MDV_APP=/nonexistent bin/mdv` falls through the search order. Proves R-33, §5.2. |
+| **T-04** | `open build/mdv.app test-docs/` loads `README.md` and the sidebar lists the other `.md` files. Proves R-02, E-04 (an empty directory changes nothing). |
+
+### 9.2 Rendering (manual, `test-docs/`)
+
+| ID | Test |
+| -- | ---- |
+| **T-05** | `test-docs/syntax.md`: every GFM construct renders (tables, task lists, footnotes, strikethrough). Proves R-07. |
+| **T-06** | `test-docs/code.md`: each of the nine languages is coloured; an unknown fence (` ```brainfuck `) is plain monospace with the label shown; a `bash` block with `$ ` prompts offers *Copy Without Prompts* and the copy has no prompts. Proves R-08, C-05, K-05. |
+| **T-07** | `test-docs/math.md`: inline, display, `cases`/`pmatrix`/`aligned`, math in lists/quotes/tables/headings, `\boxed`, registered symbols; the "must NOT become math" section stays literal; the "Errors" section shows source + message. Proves R-12..R-14, C-07, E-07, E-10, E-16. |
+| **T-08** | Same file: the TOC shows `Heading with Σ in it` and `π at h2 size, a/b too` (Unicode, no `$`); the `##` heading's π is visibly larger than body π. Proves R-13, R-21, C-07.3, I-010. |
+| **T-09** | `test-docs/images.md`: relative image renders; missing file shows the named placeholder; a `data:` image renders; an `https:` image shows "Remote image blocked" until View → Load Remote Images, then loads. Proves R-16, E-11. |
+| **T-10** | `test-docs/thematic-break.md` and `tables.md` with Smart Typography on: rules and tables render; inline `--flag` and code spans keep straight characters; prose quotes curl. Then switch to Phosphor: the menu item reads "(off for this theme)" and is disabled. Proves R-17, C-10, I-012. |
+| **T-11** | Zoom ⌘= five times: body text, headings, and math grow together; HUD shows 150 %; Actual Size resets; relaunch keeps 150 %. Proves R-30, K-04, C-04. |
+| **T-12** | Choose System theme; toggle macOS appearance: the article switches high-contrast ↔ twilight live. Proves R-29. |
+
+### 9.3 Mermaid (scripted via the harness, then manual)
+
+| ID | Test |
+| -- | ---- |
+| **T-13** | Harness `--scan` over every ` ```mermaid ` block in a corpus of real documents (the 52-diagram set used during development): 0 crashes; every non-`timeline` diagram renders. Proves R-10, I-002, E-01, E-02. |
+| **T-14** | The diagram of E-01 (two subgraphs claiming `PD`) renders with `PD` in the *last* subgraph. Proves C-06.2, E-01. |
+| **T-15** | A diagram with front matter, `<b>` labels, `[/parallelogram/]`, `style X fill:#eee` and `fill:white`: renders with clean labels and light-grey/white fills. Proves C-06.1, E-14. |
+| **T-16** | `xychart-beta` with `line "a" [...]`: two curves visible. Proves E-15. |
+| **T-17** | `test-docs/math.md` "Inside Mermaid" block: the `$$` node shows typeset math; the mixed and edge labels show Unicode. Measured offscreen at $2\times$, the node math's mean ink over pixels darker than 200 is within 10 % of the same expression typeset for the document. Proves R-15, I-009. |
+| **T-18** | Resize the window across a diagram wider than the column: labels stay as sharp as body text at every width (no resampling blur); the diagram never exceeds its natural width when the column is wider. Proves R-11, I-005, K-07. |
+| **T-19** | A sequence diagram with `<br/>` in messages, notes, and participants, an `alt`/`else` block ending in a note, and `autonumber`: no label crosses a lifeline it does not span, no label overlaps an arrow or the block header, the note is inside the block, discs 1…*n* appear. Proves C-06.2, E-13. |
+| **T-20** | A `stateDiagram-v2` with several `ID: line` descriptions and `classDef` colours: each state shows all its lines and its colours. Proves C-06.1 rule 4, C-06.2. |
+| **T-21** | Mermaid block controls: style menu switches and persists after relaunch; Show Source toggles; Export PNG writes a file whose pixel size is $2\times$ the natural point size; pinch zoom clamps at $4\times$ and $0.5\times$. Proves R-09, K-07. |
+
+### 9.4 Navigation, find, search, bookmarks (manual)
+
+| ID | Test |
+| -- | ---- |
+| **T-22** | `test-docs/links.md`: sibling link navigates in-app and ⌘← returns; `#fragment` scrolls to the heading (and to a heading containing `$\pi$` via its GitHub slug); `https:` opens the browser; a broken local link does not navigate. Proves R-18, R-19, C-11, E-05, E-06. |
+| **T-23** | ⌘F "the": counter shows *n of m*, ⌘G/⇧⌘G cycle and scroll, matches in prose are highlighted per character, a match inside a code block tints the block; Esc closes. Click the sidebar, ⌘F: the global search field gets focus. Proves R-24, E-17, E-18. |
+| **T-24** | ⌘⇧F "auth": results include a file containing "authentication" (prefix match) with the term highlighted in the snippet; choosing it opens the file. Edit a file's content without changing mtime → old content still found; touch it → re-indexed on next open. Proves R-25, R-26, C-03. |
+| **T-25** | Open 101 distinct files: the sidebar shows the newest 100, most recent first, no duplicates; swipe-delete removes one; relaunch preserves the list. Proves R-20, I-013, K-03. |
+| **T-26** | ⌘D at a section, then edit the file to insert a paragraph above it: ⌘1 still lands on the section (fingerprint); delete the section entirely: ⌘1 lands at the clamped index. Delete the file: the bookmark row is marked missing and ⌘1 is a no-op. Proves R-27, C-08, E-08, E-09. |
+| **T-27** | ⌘⇧0, scroll away, ⌘0 returns; relaunch: ⌘0 is disabled. Proves R-28. |
+| **T-28** | Scroll to the middle, quit, relaunch: same position. Then modify the file externally and relaunch: top of document. Proves R-06, C-08, E-08, K-06. |
+| **T-29** | With the file open, save it from an editor five times within 50 ms (script): one reload, scroll position kept, selection cleared. Proves R-05, K-06, E-19. |
+| **T-30** | Single-click a heading: the section flashes and the pasteboard holds its Markdown source ending at the next same-or-higher heading; double-click selects it; drag through two sections selects both whole; ⌘A + ⌘C yields the document joined by blank lines; Esc clears. Proves R-22, C-12. |
+| **T-31** | Drag the inspector's left edge to 520 pt and 180 pt (clamps), relaunch: width kept; drag the sidebar divider: clamps at 180/400. Proves R-20, R-21, K-04. |
+
+### 9.5 Robustness and resources (scripted)
+
+| ID | Test |
+| -- | ---- |
+| **T-32** | With `test-docs/math.md` open and the mouse still, `top` samples over 30 s show the process at $\leq 1\,\%$ CPU. Proves I-008. |
+| **T-33** | Corrupt `mdv.db` (truncate the file) and launch: the app opens, documents render, `NSLog` shows the `[mdv]` failure line; bookmarks and search are empty; no crash. Proves E-12, I-006. |
+| **T-34** | `diff -r` between `Vendor/SwiftMath/Sources` and upstream v1.7.3 `Sources/SwiftMath` shows only the files and hunks listed in `Vendor/SwiftMath/README.md`. Proves I-011. |
+| **T-35** | Open a document while the same path is open in a second window, edit it on disk: both windows reload. Proves E-20. |
+| **T-36** | Grep the built binary's log output during T-05..T-31 (`log stream --process mdv`): no line contains document text, a query string, or a path other than in the `[mdv]` failure message. Proves R-35, I-003. |
+
+## 10. Dependencies and environment
+
+| Dependency | Version / pin | Role |
+| ---------- | ------------- | ---- |
+| macOS | $\geq$ 13.0 (built and tested on 15) | platform |
+| Swift toolchain | $\geq$ 5.9 (`swift-tools-version: 5.9`); CI uses the `macos-15` runner's Xcode | build |
+| `gonzalezreal/swift-markdown-ui` | from 2.0.2, resolved 2.4.1 | GFM → SwiftUI; image-provider and code-highlighter hooks |
+| `swiftlang/swift-cmark`, `gonzalezreal/NetworkImage` | transitive | cmark-gfm; default remote image loader |
+| `ChimeHQ/SwiftTreeSitter` | from 0.8.0 | tree-sitter runtime |
+| tree-sitter grammars (9) | commits in `mdv/Grammars/README.md`, vendored C sources compiled as target `CGrammars` | code highlighting |
+| `lukilabs/beautiful-mermaid-swift` | from 1.0.4 (`elk-swift` 1.0.2) | Mermaid parse/layout/render |
+| SwiftMath (`mgriebling/SwiftMath` 1.7.3) | **vendored** at `Vendor/SwiftMath` with four documented patches | LaTeX typesetting; font `latinmodern-math.otf` (GUST licence) |
+| SQLite | system `libsqlite3` (linked via `linkerSettings`), FTS5 | persistence |
+| Fonts | Alegreya, Besley, OpenDyslexic (`mdv/Fonts`, registered at launch) | themes |
+| Release tooling | `codesign`, `notarytool` (keychain profile), `stapler`, `spctl`, `gh` | `make dist`, `github-release` |
+
+Environment variables: `MDV_APP` (launcher bundle override). Runtime files: `~/Library/Application Support/mdv/{mdv.db, Help.md}`, `UserDefaults` domain `com.mdv.app`. Install and run: `make install`; run tests: there is no suite — execute §9 by hand or with the harness.
+
+## 11. Traceability matrix (id → where realized)
+
+| Spec id | Where realized | Verified by |
+| ------- | -------------- | ----------- |
+| R-01 | `mdvApp.swift` (menus, `application(_:open:)`), `ContentView.loadFile`, `NotificationHandlers` | T-03, T-04, T-22, T-24, T-26 |
+| R-02 | `ContentView.loadDirectory` | T-04 |
+| R-03 | `ContentView.handleDrop` | T-04 (drop variant) |
+| R-04 | `ParsedDocument` | T-30, I-004 |
+| R-05 | `FileWatcher`, `ContentView` watcher hookup | T-29 |
+| R-06 | `ContentView.persistScrollPosition` / restore in `loadCurrentEntry`, `Database.scroll_positions` | T-28 |
+| R-07 | MarkdownUI via `ThemeManager.markdownTheme` | T-05 |
+| R-08 | `CodeRenderer`, `CodeBlockChrome` | T-06 |
+| R-09 | `MermaidCodeBlockChrome`, `MDVMermaidDiagramView`, `MDVMermaidImage.exportPNG` | T-21 |
+| R-10 | `MDVMermaidPipeline.sanitize/prepare`, `MermaidFallbackView` | T-13, T-15 |
+| R-11 | `MDVMermaidDiagramView.displayWidth`, `MDVMermaidImageCache.raster`, `rasterize` | T-18 |
+| R-12 | `MathMarkdown.rewrite`, `MathInlineImageProvider`, `MathDisplayView`, `LocalImageProvider` | T-07 |
+| R-13 | `MathMarkdown.headingLineScales`, `MDVTheme.headingSizeEms` | T-08, T-11 |
+| R-14 | `MathImageCache.typeset/fallbackImage`, `MathSymbols` | T-07 |
+| R-15 | `MDVMermaidPipeline.substituteMath/placeholder/rasterize` | T-17 |
+| R-16 | `LocalImageProvider`, `RemoteImageView`, View menu toggle | T-09 |
+| R-17 | `smartenMarkdown`, `ContentView.blockView` ordering | T-10 |
+| R-18 | `ContentView` back/forward stacks, `pushSameDocSnapshot` | T-22 |
+| R-19 | `ContentView.handleLinkClick`, `scrollToFragment`, `headingSlug` | T-22 |
+| R-20 | `HistoryManager`, sidebar views, `dragHandle` | T-25, T-31 |
+| R-21 | `inspectorPanel`, `tocPane`, `inspectorDragHandle`, `ParsedDocument.parseTOC` | T-08, T-31 |
+| R-22 | block-selection state, `copySection`, `BlockFramePreferenceKey`, Esc monitor | T-30 |
+| R-23 | `pickEditor`, `openCurrentFileInEditor` | manual (⌘E) |
+| R-24 | find bar, `recomputeMatches`, `highlightedAttributedString`, `shouldRouteToGlobalSearch` | T-23 |
+| R-25 | `Database.search/makeFTSQuery`, sidebar search UI | T-24 |
+| R-26 | `Database.indexFile/reindex`, `HistoryManager.init` | T-24 |
+| R-27 | `BookmarksManager`, `addBookmarkAtCurrentSpot`, `openBookmarkSlot`, Bookmarks menu | T-26 |
+| R-28 | placeholder state in `ContentView` | T-27 |
+| R-29 | `ThemeManager` (`resolve`, appearance KVO), toolbar picker | T-12 |
+| R-30 | `ThemeManager.fontScale`, zoom HUD | T-11 |
+| R-31 | `HelpManager` | manual (⌘?) |
+| R-32 | `@AppStorage` keys (C-04) | T-11, T-21, T-25, T-31 |
+| R-33 | `bin/mdv` | T-03 |
+| R-34 | `Makefile`, `build.sh` | T-01, T-02 |
+| R-35 | absence of logging; `Database` `NSLog` sites | T-36 |
+| R-36 | sanitisers + fallbacks | T-13 |
+| C-01 | `mdv/Info.plist`, `mdv.entitlements`, `build.sh` | T-01 |
+| C-02 | `ParsedDocument.parseBlocks/parseTOC` | T-07, T-30 |
+| C-03 | `Database.migrate/_indexFile/_search/makeFTSQuery` | T-24 |
+| C-04 | `@AppStorage` declarations | T-11, T-21, T-31 |
+| C-05 | `CodeRenderer.SupportedLanguage.resolve/highlight` | T-06 |
+| C-06 | `MDVMermaidPipeline` (+ `.1` `sanitize`, `mergeStateDescriptions`, `normalizeColors`; `.2` `normalizeSubgraphOwnership`, `applyStateStyles`, `resolveLineBreaks`, `widenActorGaps`, `expandRows`, `fitBlocksAroundNotes`, `drawAutonumbers`; `.3` `MDVTheme.mermaidDiagramTheme`) | T-13..T-20 |
+| C-07 | `MathSpec`, `MathMarkdown`, `MathSymbols`, `MathImageCache`; vendored `MTBoxed` | T-07, T-08, T-17 |
+| C-08 | `bookmarkFingerprint`, `resolveBookmarkAnchor`, `Database` bookmark/scroll tables | T-26, T-28 |
+| C-09 | `MDVTheme`, `ThemeManager.markdownTheme` | T-08, T-10, T-12 |
+| C-10 | `SmartTypography.swift` | T-10 |
+| C-11 | `ContentView.headingSlug` | T-22 |
+| C-12 | `sectionRange`, `copySection`, `stripInlineMarkdown` | T-30 |
+| C-13 | `build.sh` | T-01 |
+| C-14 | fallback views, placeholders, beeps | T-07, T-09, T-13, T-26 |
+| I-001 | pure render path; R-16 gate | T-09, T-13 |
+| I-002 | sanitisers, `try?` + fallback views | T-13 |
+| I-003 | no logging/network of content | T-36 |
+| I-004 | `ParsedDocument` cached in `@State` | T-30 |
+| I-005 | `displaySize(for:width:)` shared by view and raster | T-18 |
+| I-006 | `Database.init` flags/pragmas | T-33 |
+| I-007 | upsert statements in `Database` | T-33 |
+| I-008 | `MathImageCache.rasterized` | T-32 |
+| I-009 | pixel-snapped `image.draw(in:)` in `rasterize` | T-17 |
+| I-010 | `TOCHeading.slugText` | T-22, T-08 |
+| I-011 | `Vendor/SwiftMath/README.md` | T-34 |
+| I-012 | `smartenMarkdown` skip rules; rewrite-before-smarten | T-10 |
+| I-013 | `HistoryManager.add` | T-25 |
+| K-01, K-02 | `Package.swift`, `Info.plist`, `Makefile deps` | T-01 |
+| K-03 | `HistoryManager.maxEntries`, `Database.search(limit:)`, `BookmarksManager.maxSlots` | T-24, T-25, T-26 |
+| K-04 | `ThemeManager` scale constants; sidebar/inspector clamps | T-11, T-31 |
+| K-05 | `CGrammars` target, `SupportedLanguage` | T-06 |
+| K-06 | `FileWatcher` (50 ms), `copySection` (0.6 s), zoom HUD, scroll mtime check | T-28, T-29, T-30 |
+| K-07 | `MDVMermaidDiagramView`, `MDVMermaidImageCache` limits | T-18, T-21 |
+| K-08 | `MDVMermaidPipeline` constants, `MathImageCache` | T-17, T-19 |
+| K-09 | `bookmarkFingerprint`, `Database.migrate` | T-24, T-26 |
+| K-10 | `MDVTheme` defaults | T-11 (visual) |
+| K-11 | `Makefile dist` chain | T-02 |
+| K-12 | `build.sh` codesign; vendored font placement | T-01 |
+| E-01 | `normalizeSubgraphOwnership` | T-14 |
+| E-02 | `MermaidFallbackView` | T-13 |
+| E-03, E-04 | `loadFile` guards, `loadDirectory` | T-04 |
+| E-05, E-06 | `handleLinkClick`, `scrollToFragment` | T-22 |
+| E-07 | `MathMarkdown.findInlineClose/findDisplayClose` | T-07 |
+| E-08, E-09 | `resolveBookmarkAnchor`, `BookmarksManager.refreshFileExistence`, scroll restore | T-26, T-28 |
+| E-10 | `MathImageCache.fallbackImage`, `MathDisplayView.fallback` | T-07 |
+| E-11 | `LocalImageProvider.blockedRemoteImagePlaceholder`, `RemoteImageView` | T-09 |
+| E-12 | `Database` error paths | T-33 |
+| E-13 | `widenActorGaps`, `expandRows` | T-19 |
+| E-14 | `normalizeColors` | T-15 |
+| E-15 | `sanitize` xychart rule | T-16 |
+| E-16 | `MathDisplayView` alignment by `spec.display` | T-07 |
+| E-17, E-18 | `shouldInlineHighlight`, `shouldRouteToGlobalSearch` | T-23 |
+| E-19 | reload path clears selection | T-29 |
+| E-20 | per-window `FileWatcher` | T-35 |
+
+## 12. Open questions and decisions to confirm
+
+| ID | Decision | Default taken | Alternatives | Affects | Owner / status |
+| -- | -------- | ------------- | ------------ | ------- | -------------- |
+| D-01 | No automated test suite exists; §9 is manual/scripted. | Spec documents manual tests; the harness stays a scratch tool outside the repo. | Add a `mdvTests` target (unit tests for C-02, C-03 query building, C-07.1 delimiters, C-07.3, C-11, C-12 are pure functions and cheap to test); check the harness in under `tools/`. | §9, R-36 | maintainer / **confirm** |
+| D-02 | Inline math with descenders sits `descent` points above the baseline (SwiftUI `Text(Image)` has no baseline hook through MarkdownUI). | Accepted as a known limitation; documented in `NOTES.md`. | Fork or vendor MarkdownUI to apply `.baselineOffset` in `TextInlineRenderer.renderImage` (one-line patch). | R-12 | maintainer / **confirm** |
+| D-03 | SwiftMath is vendored (not a package dependency) because of the resource-bundle/codesign conflict. | Vendored with four patches, one font. | Fork on GitHub and depend on the fork; ship more math fonts and expose a font choice. | C-07, I-011, K-12 | maintainer / **confirm** |
+| D-04 | Mermaid diagram types the library lacks (`timeline`, `gantt`, `pie`, `mindmap`, `gitGraph`, `journey`, `quadrantChart`) show the fallback. | Fallback only. | Implement the simpler ones (`pie`, `timeline`) in mdv on top of the library's renderer primitives; or switch library. | R-10, E-02 | maintainer / open |
+| D-05 | Sequence diagrams do not mirror actor boxes at the bottom, and message labels use the library's muted grey rather than Mermaid's black. | Library defaults kept. | Draw mirrored actors in `rasterize`; override the label colour to foreground. | C-06.2 | maintainer / **confirm** |
+| D-06 | xychart series names are dropped (legend reads `Line n`) and front-matter `themeCSS` (dash patterns, widths) is discarded. | Accept. | Draw the legend in mdv from the names captured in `sanitize`. | E-15 | maintainer / **confirm** |
+| D-07 | Parallelogram nodes render as rectangles (library has no such shape). | Rectangle. | Draw the slanted shape in mdv after rendering (node rects are known). | C-06.1 rule 5 | maintainer / **confirm** |
+| D-08 | State-diagram descriptions render as a single multi-line label rather than Mermaid's title compartment + divider. | Single label. | Draw the divider line in mdv under the first line. | C-06.1 rule 4 | maintainer / **confirm** |
+| D-09 | Document-style Mermaid node fills use the page colour (25 % toward the code background) on light themes. | As stated. | Keep the previous grey (6 % toward foreground); make it a per-theme field. | C-06.3 | maintainer / **confirm** |
+| D-10 | History sidebar width is not persisted (inspector width is). | Not persisted. | Persist under `mdv_sidebar_width` for symmetry. | R-20, C-04 | maintainer / **confirm** |
+| D-11 | The `.txt` and `.mkd` extensions are accepted for drag-and-drop but not for link navigation or directory scans. | As built. | Unify the extension sets (C-02 uses `md/markdown/mdown`, drop uses five). | R-02, R-03, R-19 | maintainer / **confirm** |
+| D-12 | The CLI symlink installed by `make install` points into the checkout (`bin/mdv`), while the in-app installer points at `Contents/Resources/mdv`. | Two install paths coexist. | Make `make install-cli` link to the bundled copy too. | R-33, R-34 | maintainer / **confirm** |
+| D-13 | Bundle version is fixed at `1.0.0` in `Info.plist` while releases are versioned by git tag. | Tag governs the artefact name only. | Stamp `CFBundleShortVersionString` from the tag in `build.sh release`. | K-02, K-11 | maintainer / **confirm** |
+| D-14 | "Load Remote Images" is off by default (privacy). | Off. | On by default like most viewers. | R-16 | product / confirmed by README intent |
+
+---
+
+*Revision history — v0.1 (2026-09-14): first as-built draft, covering the tree at `a6feb14`.*
