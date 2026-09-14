@@ -99,6 +99,7 @@ Sources are cited as `[Help §…]`, `[README]`, `[NOTES]`, or a file path in `m
 | **R-33** | `bin/mdv` MUST implement the surface in §5.2: locate the app bundle per the documented search order, open files/directories by absolute path, read stdin into a temporary `.md` for `-`, print the bundle version for `--version`, and exit `1` with `mdv: no such file: <path>` on stderr for a missing argument. `[bin/mdv]` |
 | **R-34** | `make` (default) MUST build a runnable `build/mdv.app` from a clean checkout with only the Swift toolchain, copying every resource the app needs (C-13); `make install` MUST place it in `/Applications`, register it with LaunchServices, and symlink the CLI; `make dist` MUST refuse to run unless `HEAD` carries an exact `vX.Y.Z` tag. `[Makefile; build.sh]` |
 | **R-35** | The application MUST NOT print document content, file contents, or query strings to any log at any verbosity. The only diagnostics it emits are `NSLog` lines on persistence-store failures (E-12) and the font-registration lines SwiftMath prints once per font on first use. |
+| **R-38** | Fenced code blocks tagged `swift` and `sql` MUST be syntax-highlighted with tree-sitter like the languages of K-05: the `tree-sitter-swift` and `tree-sitter-sql` grammars (parser, scanner, and a `highlights.scm`) vendored under `mdv/Grammars/`, pinned in its README, compiled into `CGrammars`, and resolved from the fence hints in C-05 (`swift`; `sql`, `sqlite`, `postgresql`/`postgres`, `mysql`, `plsql`, `tsql`). Highlighting quality MUST match the existing languages: keywords, strings, comments, numbers, types, and function names each map to a palette capture. *Not yet built* — see D-15. |
 | **R-37** | The repository MUST carry an automated test suite runnable with `swift test` from a clean checkout, covering at least the pure contracts (C-02 block split, C-03 query construction, C-07.1 delimiters and C-07.3 plain text, C-08 fingerprint/resolve, C-10 smart typography, C-11 slugs, C-12 sections) and the Mermaid/LaTeX sanitisers (C-06.1, C-07.2), and CI MUST run it on every push. *Not yet built* — see D-01 and §9.0. |
 | **R-36** | The application MUST NOT crash on any document: a repair layer failure MUST degrade to the fallback of R-10/R-14, and every path that reaches a third-party parser MUST be preceded by the sanitisation that keeps that parser inside its asserted invariants (E-01). `[NOTES §Mermaid: ELK layout asserts]` |
 
@@ -238,7 +239,7 @@ Query construction: split the input on whitespace; drop the characters `" ( ) : 
 func render(code: String, languageHint: String?, theme: MDVTheme) -> AttributedString   // synchronous, never throws
 ```
 
-- Language resolution: lower-case the info string, keep its first word; direct names `c go rust bash javascript yaml toml python ruby`; aliases `js jsx javascriptreact node → javascript`, `sh zsh shell → bash`, `py python3 → python`, `rb → ruby`, `yml → yaml`, `rs → rust`, `golang → go`, `h objective-c objc → c`; anything else → plain.
+- Language resolution: lower-case the info string, keep its first word; direct names `c go rust bash javascript yaml toml python ruby` (+ `swift sql` once R-38 lands); aliases `js jsx javascriptreact node → javascript`, `sh zsh shell → bash`, `py python3 → python`, `rb → ruby`, `yml → yaml`, `rs → rust`, `golang → go`, `h objective-c objc → c` (+ `sqlite postgresql postgres mysql plsql tsql → sql` per R-38); anything else → plain.
 - Highlighting: parse with a fresh `Parser` per call, run the grammar's `highlights.scm`, colour each capture from the theme's `CodePalette` by capture-name components; `comment` captures are italic. If the query fails to compile, that language falls back to plain for the rest of the session.
 - Result cache: key `(language, theme id, hash(code))`, at most 256 entries.
 
@@ -441,7 +442,7 @@ CI (`.github/workflows/build.yml`): on every push to `main`, build `debug` and `
 | **K-02** | Bundle: `CFBundleIdentifier com.mdv.app`; version `1.0.0` (1); not sandboxed; entitlement `files.user-selected.read-only`. |
 | **K-03** | History cap 100 entries. Global search returns at most 80 hits; snippets are 14 tokens. Bookmark hot-key slots: 5. |
 | **K-04** | Zoom: step $0.10$, range $[0.60, 2.50]$, default $1.0$. Sidebar width $[180, 400]$ pt (not persisted); inspector width $[180, 520]$ pt (persisted, default 240); bookmarks pane $\geq 120$ pt with the TOC keeping $\geq 80$ pt. |
-| **K-05** | Highlighted languages: C, Go, Rust, Bash, JavaScript, YAML, TOML, Python, Ruby (grammar commits pinned in `mdv/Grammars/README.md`). |
+| **K-05** | Highlighted languages: C, Go, Rust, Bash, JavaScript, YAML, TOML, Python, Ruby (grammar commits pinned in `mdv/Grammars/README.md`); Swift and SQL are required additions (R-38). |
 | **K-06** | Live-reload coalescing window: 50 ms. Heading-copy flash: 0.6 s. Zoom HUD: ~0.9 s. Scroll-restore mtime tolerance: 1 s. |
 | **K-07** | Mermaid: raster width = $\lfloor \min(\text{natural}, \text{column} - 36) \rfloor$ pt at the screen backing scale; pinch zoom clamped to $[0.5, 4]$; zoomed container height $\leq 540$ pt. Caches: 96 layouts, 192 rasters, 192 MB. |
 | **K-08** | Math: inline spans typeset in `.text` style, display in `.display`; diagram-label math at 16 pt; message-label line pitch 13 pt; sequence row height 40 pt (library) grown by $(n-1)\times 13 + 4$ pt for $n$-line labels. Cache: 2048 images. |
@@ -506,6 +507,7 @@ Prerequisites for the unit group: `Database.databaseURL` becomes injectable; the
 | ID | Test |
 | -- | ---- |
 | **T-05** | `test-docs/syntax.md`: every GFM construct renders (tables, task lists, footnotes, strikethrough). Proves R-07. |
+| **T-37** | `test-docs/code.md` gains a `swift` block (a `struct` with a `@Published` property, a `guard let`, a string interpolation, a `// MARK:` comment) and a `sql` block (`CREATE TABLE`, a `SELECT … JOIN … WHERE` with a string literal, a `-- comment`): keywords, strings, comments, numbers, types and function names are each coloured differently from plain text, and a `postgresql`-tagged block highlights identically to `sql`. Proves R-38, C-05, K-05. |
 | **T-06** | `test-docs/code.md`: each of the nine languages is coloured; an unknown fence (` ```brainfuck `) is plain monospace with the label shown; a `bash` block with `$ ` prompts offers *Copy Without Prompts* and the copy has no prompts. Proves R-08, C-05, K-05. |
 | **T-07** | `test-docs/math.md`: inline, display, `cases`/`pmatrix`/`aligned`, math in lists/quotes/tables/headings, `\boxed`, registered symbols; the "must NOT become math" section stays literal; the "Errors" section shows source + message. Proves R-12..R-14, C-07, E-07, E-10, E-16. |
 | **T-08** | Same file: the TOC shows `Heading with Σ in it` and `π at h2 size, a/b too` (Unicode, no `$`); the `##` heading's π is visibly larger than body π. Proves R-13, R-21, C-07.3, I-010. |
@@ -612,6 +614,7 @@ Environment variables: `MDV_APP` (launcher bundle override). Runtime files: `~/L
 | R-35 | absence of logging; `Database` `NSLog` sites | T-36 |
 | R-36 | sanitisers + fallbacks | T-13 |
 | R-37 | *not yet realised* — target layout in §9.0 | CI running `swift test` (to be added) |
+| R-38 | *not yet realised* — `mdv/Grammars/{swift,sql}`, `Package.swift` `CGrammars` sources, `CodeRenderer.SupportedLanguage` | T-37 |
 | C-01 | `mdv/Info.plist`, `mdv.entitlements`, `build.sh` | T-01 |
 | C-02 | `ParsedDocument.parseBlocks/parseTOC` | T-07, T-30 |
 | C-03 | `Database.migrate/_indexFile/_search/makeFTSQuery` | T-24 |
@@ -684,8 +687,9 @@ Environment variables: `MDV_APP` (launcher bundle override). Runtime files: `~/L
 | D-11 | The `.txt` and `.mkd` extensions are accepted for drag-and-drop but not for link navigation or directory scans. | As built. | Unify the extension sets (C-02 uses `md/markdown/mdown`, drop uses five). | R-02, R-03, R-19 | maintainer / **confirm** |
 | D-12 | The CLI symlink installed by `make install` points into the checkout (`bin/mdv`), while the in-app installer points at `Contents/Resources/mdv`. | Two install paths coexist. | Make `make install-cli` link to the bundled copy too. | R-33, R-34 | maintainer / **confirm** |
 | D-13 | Bundle version is fixed at `1.0.0` in `Info.plist` while releases are versioned by git tag. | Tag governs the artefact name only. | Stamp `CFBundleShortVersionString` from the tag in `build.sh release`. | K-02, K-11 | maintainer / **confirm** |
+| D-15 | Which SQL grammar backs R-38. | `DerekStride/tree-sitter-sql` (dialect-agnostic, actively maintained, ships `highlights.scm`); Swift from `alex-pinkus/tree-sitter-swift` (its `parser.c` is generated — vendor the generated `src/`, ~10 MB, not `grammar.js`). | `m-novikov/tree-sitter-sql` (PostgreSQL-only); per-dialect grammars. | R-38, K-05 | maintainer / **confirm** |
 | D-14 | "Load Remote Images" is off by default (privacy). | Off. | On by default like most viewers. | R-16 | product / confirmed by README intent |
 
 ---
 
-*Revision history — v0.1 (2026-09-14): first as-built draft, covering the tree at `a6feb14`; §3.2 diagram made vertical; R-37 and §9.0 added after D-01 was confirmed (automated suite is a product requirement).*
+*Revision history — v0.1 (2026-09-14): first as-built draft, covering the tree at `a6feb14`; §3.2 diagram made vertical; R-37 and §9.0 added after D-01 was confirmed (automated suite is a product requirement); R-38 (Swift and SQL highlighting) and D-15 added.*
