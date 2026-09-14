@@ -46,6 +46,13 @@ baked to bitmaps in `MathImageCache` — SwiftUI treats handler images
 inside `Text` as dynamic and re-resolves the paragraph continuously
 (10–20 % idle CPU on any page with inline math until this).
 
+Math overlays in nodes must be drawn at pixel-snapped origins:
+`NSImage.draw(in:)` of a handler-backed image at a fractional origin
+composites a cached bitmap with resampling, and the glyphs come out
+measurably lighter (mean ink 120 vs 90 on 0–255, half as many near-black
+pixels) — the "washed out" look. A faux-bold fill+stroke was tried first
+and made it worse (grey fringe). Same size as document math (16pt).
+
 **xychart.** The parser only knows `line [...]`; Mermaid's named form
 `line "interest" [...]` is rewritten to it in `sanitize`. Series names
 are lost — the library's legend is hardcoded "Line 1/2", and there is no

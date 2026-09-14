@@ -288,7 +288,7 @@ struct MDVMermaidDiagramView: View {
 
     private var displayHeight: CGFloat {
         guard let prepared, displayWidth > 0 else { return 0 }
-        return ceil(displayWidth * prepared.size.height / prepared.size.width)
+        return MDVMermaidPipeline.displaySize(for: prepared, width: displayWidth).height
     }
 
     var body: some View {
@@ -343,19 +343,20 @@ struct MDVMermaidDiagramView: View {
 
     @ViewBuilder
     private func diagramBody(for image: NSImage) -> some View {
+        // Not `.resizable()`: the raster already is the display size, and a
+        // resizable Image goes through a resampling draw even at 1:1. While
+        // a pinch is in flight the bitmap is scaled visually; on release
+        // it's re-rasterised at the committed zoom.
+        let inFlight = committedZoom > 0 ? zoom / committedZoom : 1
         let baseImage = Image(nsImage: image)
-            .resizable()
-            .interpolation(.high)
-            .aspectRatio(contentMode: .fit)
+            .scaleEffect(inFlight)
+            .frame(width: image.size.width * inFlight, height: image.size.height * inFlight)
 
         if zoom > 1.01 {
             // Zoomed: inner ScrollView for panning. Pin the container height
-            // to the unzoomed fit height so the document doesn't reflow during
-            // pinch. The raster is redone at the committed zoom, so only the
-            // in-flight gesture shows a scaled bitmap.
+            // to the unzoomed fit height so the document doesn't reflow.
             ScrollView([.horizontal, .vertical], showsIndicators: true) {
                 baseImage
-                    .frame(width: displayWidth * zoom, height: displayHeight * zoom)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
             }
@@ -366,7 +367,6 @@ struct MDVMermaidDiagramView: View {
             // Unzoomed: drawn 1:1 at displayWidth, centred in the column. No
             // inner ScrollView, so wheel events bubble up to the document scroll.
             baseImage
-                .frame(width: displayWidth * zoom, height: displayHeight * zoom)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
@@ -498,14 +498,27 @@ enum MDVMermaidPipeline {
         return MDVMermaidPrepared(positioned: positioned, theme: theme, math: mathNodes)
     }
 
+    /// Whole-point size a diagram is shown at when drawn `width` points
+    /// wide. Shared by the view (frame) and `rasterize` (bitmap) so the two
+    /// can never disagree.
+    static func displaySize(for prepared: MDVMermaidPrepared, width: CGFloat) -> CGSize {
+        let w = max(1, floor(width))
+        return CGSize(width: w, height: max(1, ceil(w * prepared.size.height / prepared.size.width)))
+    }
+
     /// Draws the laid-out diagram `width` points wide (aspect preserved) into
     /// a bitmap at `scale` px/pt, upright. Text is drawn by CoreText at the
     /// final size instead of being drawn once and resampled, which is what
     /// keeps labels as sharp as the document text around them.
     static func rasterize(_ prepared: MDVMermaidPrepared, width: CGFloat, scale: CGFloat) -> NSImage? {
         let natural = prepared.size
-        let fit = max(width, 1) / natural.width
-        let size = CGSize(width: max(1, floor(natural.width * fit)), height: max(1, ceil(natural.height * fit)))
+        // The bitmap is exactly `displaySize(for:width:)` points — the same
+        // numbers the view uses for its frame — so it's shown 1:1. An
+        // off-by-one from floor(natural × fit) here was enough to make
+        // SwiftUI resample the whole diagram and soften every label.
+        let size = displaySize(for: prepared, width: width)
+        let fitX = size.width / natural.width
+        let fitY = size.height / natural.height
         guard let ctx = CGContext(
             data: nil,
             width: Int(size.width * scale), height: Int(size.height * scale),
@@ -521,7 +534,7 @@ enum MDVMermaidPipeline {
         // finished bitmap.
         ctx.saveGState()
         ctx.translateBy(x: 0, y: size.height)
-        ctx.scaleBy(x: fit, y: -fit)
+        ctx.scaleBy(x: fitX, y: -fitY)
         DiagramRenderer(theme: prepared.theme).render(
             prepared.positioned,
             in: ctx,
@@ -533,21 +546,21 @@ enum MDVMermaidPipeline {
         if !prepared.math.isEmpty, let nodes = prepared.positioned.flowchartNodes {
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-            // The math NSImages are drawing-handler backed, so they re-typeset
-            // through this context: the fill+stroke text mode set here
-            // reaches CoreText's glyph drawing and emboldens them slightly.
-            ctx.setTextDrawingMode(.fillStroke)
-            ctx.setLineWidth(mathLabelStrokeWidth * fit)
-            ctx.setLineJoin(.round)
-            ctx.setStrokeColor(prepared.theme.foreground.cgColor)
+            // Plain fill, same as document math. (A faux-bold fill+stroke was
+            // tried: it spreads ink into grey fringe and reads *lighter*.)
+            // Snap the destination to the pixel grid: NSImage rasterises a
+            // handler-backed image into a cache and then composites it, and
+            // a fractional origin means that composite is resampled — the
+            // glyphs come out visibly lighter and softer than the same
+            // formula drawn in the document.
+            func snap(_ v: CGFloat) -> CGFloat { (v * scale).rounded() / scale }
             for node in nodes {
                 guard let image = prepared.math[node.id] else { continue }
-                let w = image.size.width * fit, h = image.size.height * fit
-                let x = (node.x + (node.width - image.size.width) / 2) * fit
-                let yTop = (node.y + (node.height - image.size.height) / 2) * fit
+                let w = snap(image.size.width * fitX), h = snap(image.size.height * fitY)
+                let x = snap((node.x + (node.width - image.size.width) / 2) * fitX)
+                let yTop = snap((node.y + (node.height - image.size.height) / 2) * fitY)
                 image.draw(in: CGRect(x: x, y: size.height - yTop - h, width: w, height: h))
             }
-            ctx.setTextDrawingMode(.fill)
             NSGraphicsContext.restoreGraphicsState()
         }
 
@@ -568,9 +581,6 @@ enum MDVMermaidPipeline {
     /// a light serif and at node-label size next to 500-weight system text it
     /// reads as washed out. Same size as document display math.
     private static let mathLabelFontSize: CGFloat = 16
-    /// Faux-bold: glyphs are filled and stroked this many points so their
-    /// stems sit closer to the weight of the surrounding node labels.
-    private static let mathLabelStrokeWidth: CGFloat = 0.35
 
     private static func substituteMath(in model: inout ParsedGraphModel, theme: DiagramTheme) -> [String: NSImage] {
         var images: [String: NSImage] = [:]
