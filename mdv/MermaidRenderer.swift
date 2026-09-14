@@ -394,13 +394,51 @@ final class MDVMermaidImageCache {
     private func renderImage(source: String, theme: MDVTheme, style: MermaidRenderStyle, scale: CGFloat) async -> NSImage? {
         let diagramTheme = style.diagramTheme(for: theme)
         return await Task.detached(priority: .userInitiated) {
-            guard let image = try? MermaidRenderer.renderImage(
+            guard let image = try? MDVMermaidPipeline.renderImage(
                 source: source,
                 theme: diagramTheme,
                 scale: scale
             ) else { return SendableMermaidImage(image: nil) }
             return SendableMermaidImage(image: image.flippedVertically())
         }.value.image
+    }
+}
+
+// Parse → normalize → layout → render, instead of the library's one-shot
+// `MermaidRenderer.renderImage`, so we can repair the parsed model before it
+// reaches the ELK layout engine. ELK enforces its invariants with `assert`,
+// which is uncatchable and takes the whole app down.
+enum MDVMermaidPipeline {
+    static func renderImage(source: String, theme: DiagramTheme, scale: CGFloat) throws -> NSImage? {
+        let graph = try MermaidParser.parse(source)
+        switch graph.typedPayload {
+        case .flowchart(let model), .stateDiagram(let model):
+            normalizeSubgraphOwnership(model)
+        default:
+            break
+        }
+        let positioned = try GraphLayout().layout(graph)
+        return MermaidImageRenderer(theme: theme).renderImage(from: positioned, scale: scale)
+    }
+
+    // The parser lets a node be claimed by several subgraphs (e.g. `A --> B`
+    // inside `subgraph X` and `B` declared in `subgraph Y`). The layout builder
+    // then emits B as a child of both compound nodes, and ELK asserts on the
+    // edge-container mismatch. Mermaid.js gives the node to the subgraph that
+    // mentioned it last; do the same so each node has exactly one owner.
+    private static func normalizeSubgraphOwnership(_ model: ParsedGraphModel) {
+        var owner: [String: ObjectIdentifier] = [:]
+        func claim(_ subgraph: original_src_types.MermaidSubgraph) {
+            for id in subgraph.nodeIds { owner[id] = ObjectIdentifier(subgraph) }
+            subgraph.children.forEach(claim)
+        }
+        func prune(_ subgraph: original_src_types.MermaidSubgraph) {
+            let me = ObjectIdentifier(subgraph)
+            subgraph.nodeIds.removeAll { owner[$0] != me }
+            subgraph.children.forEach(prune)
+        }
+        model.subgraphs.forEach(claim)
+        model.subgraphs.forEach(prune)
     }
 }
 
