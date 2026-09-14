@@ -761,7 +761,15 @@ private extension MDVTheme {
         let foregroundColor = nsColor(for: text, fallbackRGBA: isDark ? 0xC9D1D9FF : 0x24292FFF)
         let accentColor = nsColor(for: accent, fallbackRGBA: isDark ? 0x58A6FFFF : 0x0969DAFF)
         let lineColor = backgroundColor.mixed(with: foregroundColor, amount: isDark ? 0.70 : 0.62)
-        let nodeSurfaceColor = backgroundColor.mixed(with: foregroundColor, amount: isDark ? 0.16 : 0.06)
+        // Light themes: nodes take the page colour so labels — and typeset
+        // math especially — sit on the same ground as the body text instead
+        // of a grey that's darker than the panel; the border keeps them
+        // legible where page and code backgrounds coincide. Dark themes
+        // keep the lifted surface.
+        let pageColor = nsColor(for: background, fallbackRGBA: 0xFFFFFFFF)
+        let nodeSurfaceColor = isDark
+            ? backgroundColor.mixed(with: foregroundColor, amount: 0.16)
+            : pageColor.mixed(with: backgroundColor, amount: 0.25)
         let nodeBorderColor = backgroundColor.mixed(with: foregroundColor, amount: isDark ? 0.58 : 0.42)
 
         return DiagramTheme(
