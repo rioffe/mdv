@@ -57,6 +57,11 @@ and made it worse (grey fringe). Same size as document math (16pt).
 `fill:white` became *black*. `normalizeColors` expands CSS shorthand and
 translates common colour names on `style`/`classDef`/`linkStyle` lines.
 
+**Shapes.** Parallelograms `id[/text/]` / `id[\text\]` aren't in the
+parser's shape table (trapezoids are), so they hit the rectangle rule with
+the slashes and quotes left in the label. `sanitize` rewrites them to plain
+rectangles — shape lost, text clean.
+
 **xychart.** The parser only knows `line [...]`; Mermaid's named form
 `line "interest" [...]` is rewritten to it in `sanitize`. Series names
 are lost — the library's legend is hardcoded "Line 1/2", and there is no

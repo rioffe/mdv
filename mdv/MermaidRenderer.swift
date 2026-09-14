@@ -672,6 +672,14 @@ enum MDVMermaidPipeline {
             )
         }
         joined = normalizeColors(in: joined)
+        // Parallelogram shapes `id[/text/]` and `id[\text\]`: the parser only
+        // knows the trapezoids `[/…\]` / `[\…/]`, so these fall through to the
+        // rectangle rule with the slashes (and quotes) left in the label.
+        // Draw them as plain rectangles; the shape is lost, the text isn't.
+        joined = joined.replacingOccurrences(
+            of: #"([\w-]+)\[/([^\]]+?)/\]"#, with: "$1[$2]", options: .regularExpression)
+        joined = joined.replacingOccurrences(
+            of: #"([\w-]+)\[\\([^\]]+?)\\\]"#, with: "$1[$2]", options: .regularExpression)
         guard joined.contains("<") else { return joined }
         return joined.replacingOccurrences(
             of: #"</?(?:b|i|u|s|strong|em|small|sup|sub|span|code|tt|font|mark)(?:\s[^<>]*)?>"#,
