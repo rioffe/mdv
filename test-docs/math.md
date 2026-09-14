@@ -88,7 +88,8 @@ $\nexists$, $\leqslant$, $\#$, $\_$.
 
 Commands rewritten into ones the parser knows: $\operatorname{argmax}_x f(x)$,
 $a \bmod b$, $a \equiv b \pmod{n}$, $\dfrac{1}{2}$, $\boldsymbol{v}$, $x \coloneqq y$,
-$a \not= b$, and `align`/`equation`/`multline` environments:
+$a \not= b$, size hints dropped in $\big(p = h/N\big)$ and $\Bigl[\tfrac{1}{2}\Bigr]$,
+and `align`/`equation`/`multline` environments:
 
 $$
 \begin{align*}

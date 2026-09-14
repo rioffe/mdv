@@ -61,7 +61,7 @@ in `mdv/MathRenderer.swift` registers extra symbols with
 `MTMathAtomFactory.add` (`\gtrsim`, `\therefore`, `\implies`, `\iint`,
 `\dots`, …) and regex-rewrites commands whose *syntax* the parser lacks
 (`\operatorname{}` → `\mathrm{}`, `\bmod`/`\pmod`, `\dfrac`, `align*` →
-`aligned`, `equation` stripped, …). Still unsupported: `\boxed`,
+`aligned`, `equation` stripped, `\big`/`\Bigl`/`\biggr`… size hints dropped). Still unsupported: `\boxed`,
 `\underbrace`/`\overbrace`, `\stackrel`, `\substack`, `\&` (the parser
 treats `&` as a column separator everywhere). To find what a document
 needs, the scratch harness's `--check` mode runs each line through

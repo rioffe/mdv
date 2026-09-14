@@ -540,6 +540,9 @@ enum MathSymbols {
         (#"\\bmod\b"#, #"\\;\\mathrm{mod}\\;"#),
         (#"\\pmod\s*\{([^{}]*)\}"#, #"\\;(\\mathrm{mod}\\;$1)"#),
         (#"\\not\s*="#, #"\\neq"#),
+        // \big( \Bigl[ \biggr\} \Bigg| … — size hints the parser doesn't know;
+        // drop them and let the delimiter render at normal size.
+        (#"\\[bB]igg?[lrm]?(?=\s*(?:[()\[\]|/]|\\[{}|]|\\[a-zA-Z]+))"#, ""),
         (#"\\coloneqq\b"#, ":="),
         (#"\\begin\{(align|equation|gather|multline)\*?\}"#, #"\\begin{$1}"#),
         (#"\\end\{(align|equation|gather|multline)\*?\}"#, #"\\end{$1}"#),
