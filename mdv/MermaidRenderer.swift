@@ -533,6 +533,13 @@ enum MDVMermaidPipeline {
         if !prepared.math.isEmpty, let nodes = prepared.positioned.flowchartNodes {
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+            // The math NSImages are drawing-handler backed, so they re-typeset
+            // through this context: the fill+stroke text mode set here
+            // reaches CoreText's glyph drawing and emboldens them slightly.
+            ctx.setTextDrawingMode(.fillStroke)
+            ctx.setLineWidth(mathLabelStrokeWidth * fit)
+            ctx.setLineJoin(.round)
+            ctx.setStrokeColor(prepared.theme.foreground.cgColor)
             for node in nodes {
                 guard let image = prepared.math[node.id] else { continue }
                 let w = image.size.width * fit, h = image.size.height * fit
@@ -540,6 +547,7 @@ enum MDVMermaidPipeline {
                 let yTop = (node.y + (node.height - image.size.height) / 2) * fit
                 image.draw(in: CGRect(x: x, y: size.height - yTop - h, width: w, height: h))
             }
+            ctx.setTextDrawingMode(.fill)
             NSGraphicsContext.restoreGraphicsState()
         }
 
@@ -556,7 +564,13 @@ enum MDVMermaidPipeline {
     /// math image is drawn over the node afterwards (`composite`). Math mixed
     /// with text, and math in edge labels, falls back to the Unicode
     /// approximation the TOC uses (`x²`, `≤`, `a/b`).
-    private static let mathLabelFontSize: CGFloat = 14
+    /// Body-text size rather than the 13pt node-label size: Latin Modern is
+    /// a light serif and at node-label size next to 500-weight system text it
+    /// reads as washed out. Same size as document display math.
+    private static let mathLabelFontSize: CGFloat = 16
+    /// Faux-bold: glyphs are filled and stroked this many points so their
+    /// stems sit closer to the weight of the surrounding node labels.
+    private static let mathLabelStrokeWidth: CGFloat = 0.35
 
     private static func substituteMath(in model: inout ParsedGraphModel, theme: DiagramTheme) -> [String: NSImage] {
         var images: [String: NSImage] = [:]
