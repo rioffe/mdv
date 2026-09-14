@@ -70,6 +70,12 @@ SwiftMath and prints `FAIL <cmd>`; adding a symbol is one dictionary line.
 Math inside ATX headings is sized by the heading's em (`MDVTheme.headingSizeEms`),
 so `# Monte Carlo $\pi$` gets an h1-sized π.
 
+The TOC sidebar and bookmark titles are plain strings, so
+`MathMarkdown.plainText` turns spans into Unicode there (`$\pi$` → π,
+`$x^2 \le y_1$` → x² ≤ y₁). `TOCHeading.slugText` keeps the un-converted
+text so `#monte-carlo-pi-estimator` fragment links still resolve the way
+GitHub slugs them.
+
 **Delimiter rules** follow Pandoc's `tex_math_dollars`: opening `$` needs a
 non-space after it, closing `$` needs a non-space before it and no digit
 after it, no bare `$` inside, and a span never crosses a backtick. So

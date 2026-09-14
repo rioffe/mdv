@@ -267,6 +267,122 @@ enum MathMarkdown {
     }
 }
 
+// MARK: - Plain-text rendering (TOC, bookmark titles)
+
+extension MathMarkdown {
+    /// Replaces math spans with a readable Unicode approximation, for places
+    /// that show heading text as a plain string (the TOC sidebar, bookmark
+    /// names): `$\pi$` → π, `$x^2 \le y_1$` → x² ≤ y₁, `$\frac{a}{b}$` → a/b.
+    /// Commands without a mapping keep their name minus the backslash.
+    static func plainText(_ s: String) -> String {
+        guard s.contains("$") else { return s }
+        let chars = Array(s)
+        var out = ""
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\", i + 1 < chars.count {
+                out.append(chars[i + 1]); i += 2; continue
+            }
+            if c == "$" {
+                // Same delimiter rules as `rewrite`, so "$5 and $x$" agrees.
+                if i + 1 < chars.count, chars[i + 1] == "$", let close = findDisplayClose(chars, from: i + 2) {
+                    out += latexToUnicode(String(chars[(i + 2)..<close]))
+                    i = close + 2
+                    continue
+                }
+                if let close = findInlineClose(chars, from: i + 1) {
+                    out += latexToUnicode(String(chars[(i + 1)..<close]))
+                    i = close + 1
+                    continue
+                }
+            }
+            out.append(c); i += 1
+        }
+        return out
+    }
+
+    private static func latexToUnicode(_ latex: String) -> String {
+        var s = latex
+        // \frac{a}{b} → a/b, \sqrt{x} → √x, wrappers → contents
+        s = s.replacingOccurrences(of: #"\\frac\{([^{}]*)\}\{([^{}]*)\}"#, with: "$1/$2", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\\sqrt\{([^{}]*)\}"#, with: "√$1", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\\(?:text|mathrm|mathbf|mathit|mathcal|mathbb|operatorname|boldsymbol|bm|hat|vec|bar|tilde)\{([^{}]*)\}"#, with: "$1", options: .regularExpression)
+
+        let chars = Array(s)
+        var result = ""
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\" {
+                var name = ""
+                var j = i + 1
+                while j < chars.count, chars[j].isLetter { name.append(chars[j]); j += 1 }
+                if name.isEmpty, j < chars.count { name = String(chars[j]); j += 1 }   // \, \; \{ …
+                result += symbolTable[name] ?? name
+                i = j
+                continue
+            }
+            if c == "^" || c == "_" {
+                // Script: `^2`, `_i`, `^{10}`, `_{n+1}` → Unicode if every
+                // character has a form, else keep the `^`/`_` verbatim.
+                let table = c == "^" ? superscripts : subscripts
+                var body = ""
+                var j = i + 1
+                if j < chars.count, chars[j] == "{" {
+                    j += 1
+                    while j < chars.count, chars[j] != "}" { body.append(chars[j]); j += 1 }
+                    j = min(j + 1, chars.count)
+                } else if j < chars.count {
+                    body = String(chars[j]); j += 1
+                }
+                let mapped = body.map { table[$0].map(String.init) }
+                if !body.isEmpty, mapped.allSatisfy({ $0 != nil }) {
+                    result += mapped.compactMap { $0 }.joined()
+                } else {
+                    result.append(c); result += body
+                }
+                i = j
+                continue
+            }
+            if c == "{" || c == "}" { i += 1; continue }
+            result.append(c); i += 1
+        }
+        return result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private static let superscripts: [Character: Character] = [
+        "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+        "+": "⁺", "-": "⁻", "n": "ⁿ", "i": "ⁱ",
+    ]
+    private static let subscripts: [Character: Character] = [
+        "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+        "+": "₊", "-": "₋", "i": "ᵢ", "j": "ⱼ", "n": "ₙ", "k": "ₖ", "x": "ₓ",
+    ]
+    private static let symbolTable: [String: String] = [
+        "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε", "varepsilon": "ε",
+        "zeta": "ζ", "eta": "η", "theta": "θ", "vartheta": "ϑ", "iota": "ι", "kappa": "κ",
+        "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ", "pi": "π", "rho": "ρ", "sigma": "σ",
+        "tau": "τ", "upsilon": "υ", "phi": "φ", "varphi": "φ", "chi": "χ", "psi": "ψ", "omega": "ω",
+        "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ", "Lambda": "Λ", "Xi": "Ξ", "Pi": "Π",
+        "Sigma": "Σ", "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+        "le": "≤", "leq": "≤", "ge": "≥", "geq": "≥", "ne": "≠", "neq": "≠", "approx": "≈",
+        "sim": "∼", "simeq": "≃", "equiv": "≡", "propto": "∝", "ll": "≪", "gg": "≫",
+        "gtrsim": "≳", "lesssim": "≲", "times": "×", "cdot": "·", "pm": "±", "mp": "∓",
+        "div": "÷", "infty": "∞", "partial": "∂", "nabla": "∇", "sum": "∑", "prod": "∏",
+        "int": "∫", "sqrt": "√", "to": "→", "rightarrow": "→", "leftarrow": "←",
+        "Rightarrow": "⇒", "Leftrightarrow": "⇔", "iff": "⇔", "implies": "⇒", "mapsto": "↦",
+        "in": "∈", "notin": "∉", "subset": "⊂", "subseteq": "⊆", "cup": "∪", "cap": "∩",
+        "forall": "∀", "exists": "∃", "neg": "¬", "land": "∧", "lor": "∨", "emptyset": "∅",
+        "ldots": "…", "cdots": "⋯", "dots": "…", "hbar": "ℏ", "ell": "ℓ", "degree": "°",
+        "quad": " ", "qquad": "  ", ",": " ", ";": " ", "!": "",
+        "langle": "⟨", "rangle": "⟩", "lceil": "⌈", "rceil": "⌉", "lfloor": "⌊", "rfloor": "⌋",
+        "log": "log", "ln": "ln", "sin": "sin", "cos": "cos", "tan": "tan", "exp": "exp",
+        "lim": "lim", "max": "max", "min": "min",
+    ]
+}
+
 // MARK: - Typesetting + cache
 
 final class MathRendered {

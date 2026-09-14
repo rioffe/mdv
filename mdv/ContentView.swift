@@ -63,7 +63,16 @@ struct ContentView: View {
     @State private var tocSearchQuery: String = ""
     @State private var tocSearchVisible: Bool = false
     @FocusState private var tocSearchFocused: Bool
-    private let inspectorWidth: CGFloat = 240
+    /// Inspector (TOC + bookmarks) width. Drag the divider on its left edge
+    /// to resize; persisted, unlike the history sidebar, because the TOC
+    /// is where long headings live and the chosen width is a real preference.
+    @AppStorage("mdv_inspector_width") private var inspectorWidthRaw: Double = 240
+    private var inspectorWidth: CGFloat {
+        min(max(CGFloat(inspectorWidthRaw), minInspectorWidth), maxInspectorWidth)
+    }
+    private let minInspectorWidth: CGFloat = 180
+    private let maxInspectorWidth: CGFloat = 520
+    @State private var inspectorHandleHovered = false
 
     // External editor (Edit button in toolbar)
     @AppStorage("mdv_editor_app_path") private var editorAppPath: String = ""
@@ -189,7 +198,12 @@ struct ContentView: View {
 
     struct TOCHeading: Identifiable {
         let level: Int
+        /// Display text: inline markdown stripped, math spans rendered as
+        /// Unicode (`$\pi$` → π).
         let text: String
+        /// Same but with math left as source, for GitHub-compatible slugs
+        /// (`#monte-carlo-pi-estimator`, not `…-π-…`).
+        let slugText: String
         let blockIndex: Int
         var id: Int { blockIndex }
     }
@@ -351,7 +365,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if inspectorVisible {
-                Divider()
+                inspectorDragHandle
                 inspectorPanel
                     .frame(width: inspectorWidth)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -1129,6 +1143,31 @@ struct ContentView: View {
                 .onChanged { value in
                     let newWidth = sidebarWidth + value.translation.width
                     sidebarWidth = min(max(newWidth, minSidebarWidth), maxSidebarWidth)
+                }
+        )
+    }
+
+    /// Mirror of `dragHandle` for the inspector's left edge. Dragging left
+    /// widens the panel. No collapse chevron — the toolbar button owns that.
+    private var inspectorDragHandle: some View {
+        ZStack {
+            Color.clear
+                .frame(width: 8)
+                .contentShape(Rectangle())
+            Rectangle()
+                .fill(inspectorHandleHovered ? themes.current.accent.opacity(0.5) : themes.current.divider)
+                .frame(width: inspectorHandleHovered ? 2 : 1)
+                .animation(.easeInOut(duration: 0.15), value: inspectorHandleHovered)
+        }
+        .onHover { inside in
+            inspectorHandleHovered = inside
+            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let newWidth = inspectorWidth - value.translation.width
+                    inspectorWidthRaw = Double(min(max(newWidth, minInspectorWidth), maxInspectorWidth))
                 }
         )
     }
@@ -2199,7 +2238,7 @@ struct ContentView: View {
     /// or pointed at something the parser didn't classify as a heading).
     private func scrollToFragment(_ fragment: String) {
         let target = headingSlug(fragment)
-        guard let heading = tocHeadings.first(where: { headingSlug($0.text) == target }) else {
+        guard let heading = tocHeadings.first(where: { headingSlug($0.slugText) == target }) else {
             return
         }
         tocScrollTrigger = heading.blockIndex
@@ -2540,7 +2579,7 @@ struct ContentView: View {
             else { prefix = nil }
             if let pfx = prefix {
                 let firstLine = block.components(separatedBy: "\n").first ?? block
-                return stripInlineMarkdown(String(firstLine.dropFirst(pfx.count)))
+                return stripInlineMarkdown(MathMarkdown.plainText(String(firstLine.dropFirst(pfx.count))))
             }
         }
         // No heading nearby; use the block's own first content line as a label.
@@ -2878,8 +2917,12 @@ fileprivate struct ParsedDocument: Equatable {
             // Single-line headings only
             let firstLine = trimmed.components(separatedBy: "\n").first ?? trimmed
             let raw = String(firstLine.dropFirst(prefix.count))
-            let text = stripInlineMarkdown(raw)
-            result.append(ContentView.TOCHeading(level: level, text: text, blockIndex: idx))
+            result.append(ContentView.TOCHeading(
+                level: level,
+                text: stripInlineMarkdown(MathMarkdown.plainText(raw)),
+                slugText: stripInlineMarkdown(raw),
+                blockIndex: idx
+            ))
         }
         return result
     }

@@ -31,7 +31,7 @@ Every program eventually evolves bookmarks. We did not fight it.
 
 ## Sidebars
 
-- **TOC** — h1/h2/h3 headings, click to jump. Toggle from the toolbar.
+- **TOC** — h1/h2/h3 headings, click to jump. Toggle from the toolbar; drag its left edge to resize (the width is remembered).
 - **History** — every file you have opened, ever, until you swipe one left and tap delete. Survives restart.
 
 ## Themes
