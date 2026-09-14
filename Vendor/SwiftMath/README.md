@@ -16,6 +16,10 @@ Local changes vs upstream:
 - `MathBundle/MathFont.swift` and `MathRender/MTFont.swift`: the three
   `Bundle.module.url(forResource: "mathFonts", …)` calls now read
   `MathFontBundle.url`.
+- `MathRender/MTMathList.swift`: `MTMathAtom.init(type:value:)` is `public`
+  (upstream: internal) so `mdv/MathRenderer.swift` can register symbols
+  upstream lacks (`\gtrsim`, `\therefore`, `\iint`, …) via
+  `MTMathAtomFactory.add(latexSymbol:value:)`.
 - `mathFonts.bundle` is trimmed to Latin Modern Math (the only font mdv
   uses) plus its GUST license. Upstream ships eleven more; copy them in
   from upstream if you ever want to offer a math font choice.

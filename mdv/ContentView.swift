@@ -2036,6 +2036,7 @@ struct ContentView: View {
             let withMath = MathMarkdown.rewrite(
                 block,
                 fontSize: themes.current.baseFontSize * themes.fontScale,
+                headingSizeEms: themes.current.headingSizeEms,
                 color: NSColor(themes.current.text)
             )
             Markdown(smartTypographyEnabled ? smartenMarkdown(withMath) : withMath)

@@ -209,7 +209,9 @@ public class MTMathAtom: NSObject {
     /// Factory function to create an atom with a given type and value.
     /// - parameter type: The type of the atom to instantiate.
     /// - parameter value: The value of the atoms nucleus. The value is ignored for fractions and radicals.
-    init(type:MTMathAtomType, value:String) {
+    // mdv: made public so the app can register extra symbols through
+    // MTMathAtomFactory.add(latexSymbol:value:) (upstream: internal).
+    public init(type:MTMathAtomType, value:String) {
         self.type = type
         self.nucleus = type == .radical ? "" : value
     }

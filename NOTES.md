@@ -56,6 +56,20 @@ would fix it — but that needs a one-line patch inside MarkdownUI
 (`Sources/MarkdownUI/Renderer/TextInlineRenderer.swift`, `renderImage`),
 i.e. a fork or a vendored copy. Display math is unaffected.
 
+**Coverage.** SwiftMath lacks a fair amount of amssymb/amsmath. `MathSymbols`
+in `mdv/MathRenderer.swift` registers extra symbols with
+`MTMathAtomFactory.add` (`\gtrsim`, `\therefore`, `\implies`, `\iint`,
+`\dots`, …) and regex-rewrites commands whose *syntax* the parser lacks
+(`\operatorname{}` → `\mathrm{}`, `\bmod`/`\pmod`, `\dfrac`, `align*` →
+`aligned`, `equation` stripped, …). Still unsupported: `\boxed`,
+`\underbrace`/`\overbrace`, `\stackrel`, `\substack`, `\&` (the parser
+treats `&` as a column separator everywhere). To find what a document
+needs, the scratch harness's `--check` mode runs each line through
+SwiftMath and prints `FAIL <cmd>`; adding a symbol is one dictionary line.
+
+Math inside ATX headings is sized by the heading's em (`MDVTheme.headingSizeEms`),
+so `# Monte Carlo $\pi$` gets an h1-sized π.
+
 **Delimiter rules** follow Pandoc's `tex_math_dollars`: opening `$` needs a
 non-space after it, closing `$` needs a non-space before it and no digit
 after it, no bare `$` inside, and a span never crosses a backtick. So

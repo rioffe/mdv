@@ -92,7 +92,16 @@ enum MathMarkdown {
     /// must be followed by non-whitespace, a closing `$` must be preceded by
     /// non-whitespace and not followed by a digit, and a span can't contain
     /// a bare `$`. That keeps "$5 and $10" prose intact.
-    static func rewrite(_ block: String, fontSize: CGFloat, color: NSColor) -> String {
+    /// - Parameters:
+    ///   - fontSize: body size in points; math inside an ATX heading is
+    ///     scaled by `headingSizeEms[level - 1]` so `# The $\pi$ estimator`
+    ///     gets heading-sized π.
+    static func rewrite(
+        _ block: String,
+        fontSize: CGFloat,
+        headingSizeEms: [CGFloat] = [],
+        color: NSColor
+    ) -> String {
         guard block.contains("$") else { return block }
         let trimmed = block.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { return block }
@@ -105,8 +114,21 @@ enum MathMarkdown {
         var i = 0
         var codeRun = 0   // length of the open inline-code backtick run, 0 outside
 
-        func spec(_ latex: String, display: Bool) -> String {
-            let s = MathSpec(latex: latex, display: display, fontSize: fontSize, colorRGBA: rgba)
+        // Font scale for the line a span starts on: heading em or 1.
+        let lineScales = headingLineScales(chars, headingSizeEms)
+        var lineStarts = [0]
+        for (k, c) in chars.enumerated() where c == "\n" { lineStarts.append(k + 1) }
+        func scale(at index: Int) -> CGFloat {
+            var lo = 0, hi = lineStarts.count - 1
+            while lo < hi {
+                let mid = (lo + hi + 1) / 2
+                if lineStarts[mid] <= index { lo = mid } else { hi = mid - 1 }
+            }
+            return lineScales[lo]
+        }
+
+        func spec(_ latex: String, display: Bool, at index: Int) -> String {
+            let s = MathSpec(latex: latex, display: display, fontSize: fontSize * scale(at: index), colorRGBA: rgba)
             return "![](\(s.url))"
         }
 
@@ -147,13 +169,13 @@ enum MathMarkdown {
                         if !head.isEmpty {
                             while !head.hasSuffix("\n\n") { head.append("\n") }
                         }
-                        out = head + indent + spec(latex, display: true)
+                        out = head + indent + spec(latex, display: true, at: i)
                         i = after
                         while i < n, chars[i] == " " || chars[i] == "\t" { i += 1 }
                         if i < n, chars[i] == "\n" { i += 1 }
                         if i < n { out.append("\n\n") }
                     } else {
-                        out.append(spec(latex, display: true))
+                        out.append(spec(latex, display: true, at: i))
                         i = after
                     }
                     continue
@@ -164,13 +186,31 @@ enum MathMarkdown {
             // `$…$`
             if let close = findInlineClose(chars, from: i + 1) {
                 let latex = String(chars[(i + 1)..<close])
-                out.append(spec(latex, display: false))
+                out.append(spec(latex, display: false, at: i))
                 i = close + 1
                 continue
             }
             out.append("$"); i += 1
         }
         return out
+    }
+
+    /// Per-line font scale: the heading em for `#`–`######` lines (up to
+    /// three leading spaces, as CommonMark allows), 1 for everything else.
+    private static func headingLineScales(_ chars: [Character], _ ems: [CGFloat]) -> [CGFloat] {
+        var scales: [CGFloat] = []
+        var lineStart = 0
+        for k in 0...chars.count where k == chars.count || chars[k] == "\n" {
+            var j = lineStart
+            var spaces = 0
+            while j < k, chars[j] == " ", spaces < 3 { j += 1; spaces += 1 }
+            var hashes = 0
+            while j < k, chars[j] == "#", hashes <= 6 { j += 1; hashes += 1 }
+            let isHeading = hashes >= 1 && hashes <= 6 && (j == k || chars[j] == " " || chars[j] == "\t")
+            scales.append(isHeading && hashes <= ems.count ? ems[hashes - 1] : 1)
+            lineStart = k + 1
+        }
+        return scales
     }
 
     private static func findDisplayClose(_ chars: [Character], from start: Int) -> Int? {
@@ -268,8 +308,9 @@ final class MathImageCache {
     }
 
     private static func typeset(_ spec: MathSpec) -> MathRendered {
+        MathSymbols.registerOnce()
         var math = MathImage(
-            latex: spec.latex,
+            latex: MathSymbols.preprocess(spec.latex),
             fontSize: spec.fontSize,
             textColor: spec.color,
             labelMode: spec.display ? .display : .text,
@@ -300,6 +341,98 @@ final class MathImageCache {
             return true
         }
     }
+}
+
+// MARK: - Filling SwiftMath's LaTeX gaps
+
+/// SwiftMath covers core LaTeX/AMS math but not all of it. Two kinds of
+/// gap are patched here: plain symbols are registered with the atom
+/// factory (the Latin Modern Math font has the glyphs), and a few
+/// commands that need syntax the parser lacks are rewritten to
+/// equivalents it does have. Anything else still shows as source.
+enum MathSymbols {
+    private static let registration: Void = {
+        func rel(_ v: String) -> MTMathAtom { MTMathAtom(type: .relation, value: v) }
+        func ord(_ v: String) -> MTMathAtom { MTMathAtom(type: .ordinary, value: v) }
+        func bin(_ v: String) -> MTMathAtom { MTMathAtom(type: .binaryOperator, value: v) }
+        func op(_ v: String) -> MTMathAtom { MTMathAtomFactory.operatorWithName(v, limits: true) }
+
+        let symbols: [String: MTMathAtom] = [
+            // relations (amssymb)
+            "gtrsim": rel("\u{2273}"), "lesssim": rel("\u{2272}"),
+            "gtrapprox": rel("\u{2A86}"), "lessapprox": rel("\u{2A85}"),
+            "leqslant": rel("\u{2A7D}"), "geqslant": rel("\u{2A7E}"),
+            "lll": rel("\u{22D8}"), "ggg": rel("\u{22D9}"),
+            "nless": rel("\u{226E}"), "ngtr": rel("\u{226F}"),
+            "nleq": rel("\u{2270}"), "ngeq": rel("\u{2271}"),
+            "doteq": rel("\u{2250}"), "triangleq": rel("\u{225C}"),
+            "therefore": rel("\u{2234}"), "because": rel("\u{2235}"),
+            "implies": rel("\u{27F9}"), "impliedby": rel("\u{27F8}"),
+            "models": rel("\u{22A8}"), "vDash": rel("\u{22A8}"), "Vdash": rel("\u{22A9}"),
+            "nparallel": rel("\u{2226}"), "nmid": rel("\u{2224}"),
+            "subsetneq": rel("\u{228A}"), "supsetneq": rel("\u{228B}"),
+            "nsubseteq": rel("\u{2288}"), "nsupseteq": rel("\u{2289}"),
+            "sqsubseteq": rel("\u{2291}"), "sqsupseteq": rel("\u{2292}"),
+            "precsim": rel("\u{227E}"), "succsim": rel("\u{227F}"),
+            "hookrightarrow": rel("\u{21AA}"), "hookleftarrow": rel("\u{21A9}"),
+            "rightharpoonup": rel("\u{21C0}"), "leftharpoonup": rel("\u{21BC}"),
+            "rightleftharpoons": rel("\u{21CC}"), "leftrightharpoons": rel("\u{21CB}"),
+            "nearrow": rel("\u{2197}"), "searrow": rel("\u{2198}"),
+            "swarrow": rel("\u{2199}"), "nwarrow": rel("\u{2196}"),
+            "longmapsto": rel("\u{27FC}"), "twoheadrightarrow": rel("\u{21A0}"),
+            "rightsquigarrow": rel("\u{21DD}"), "leadsto": rel("\u{21DD}"),
+            "rightrightarrows": rel("\u{21C9}"), "leftleftarrows": rel("\u{21C7}"),
+            // ordinary symbols
+            "dots": ord("\u{2026}"), "dotsc": ord("\u{2026}"), "dotsb": ord("\u{22EF}"),
+            "varnothing": ord("\u{2205}"), "hslash": ord("\u{210F}"), "mho": ord("\u{2127}"),
+            "Box": ord("\u{25A1}"), "square": ord("\u{25A1}"), "blacksquare": ord("\u{25A0}"),
+            "bigstar": ord("\u{2605}"), "checkmark": ord("\u{2713}"),
+            "ddagger": ord("\u{2021}"), "S": ord("\u{00A7}"), "P": ord("\u{00B6}"),
+            "pounds": ord("\u{00A3}"), "copyright": ord("\u{00A9}"), "degree": ord("\u{00B0}"),
+            "beth": ord("\u{2136}"), "gimel": ord("\u{2137}"), "wp": ord("\u{2118}"),
+            "nexists": ord("\u{2204}"), "complement": ord("\u{2201}"),
+            "#": ord("#"), "_": ord("_"),   // `\&` can't be done: `&` is the parser's column separator
+            // large operators
+            "iint": op("\u{222C}"), "iiint": op("\u{222D}"), "oiint": op("\u{222F}"),
+            "bigsqcup": op("\u{2A06}"), "bigodot": op("\u{2A00}"),
+            "bigotimes": op("\u{2A02}"), "biguplus": op("\u{2A04}"),
+            // binary operators
+            "intercal": bin("\u{22BA}"), "leftthreetimes": bin("\u{22CB}"),
+            "rightthreetimes": bin("\u{22CC}"), "divideontimes": bin("\u{22C7}"),
+        ]
+        for (name, atom) in symbols where MTMathAtomFactory.atom(forLatexSymbol: name) == nil {
+            MTMathAtomFactory.add(latexSymbol: name, value: atom)
+        }
+    }()
+
+    static func registerOnce() { _ = registration }
+
+    /// Command-level rewrites for syntax SwiftMath's parser doesn't accept.
+    static func preprocess(_ latex: String) -> String {
+        guard latex.contains("\\") else { return latex }
+        var s = latex
+        for (pattern, replacement) in rewrites {
+            s = s.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        return s
+    }
+
+    private static let rewrites: [(String, String)] = [
+        (#"\\operatorname\*?\s*\{"#, #"\\mathrm{"#),
+        (#"\\(?:dfrac|tfrac)\b"#, #"\\frac"#),
+        (#"\\boldsymbol\b"#, #"\\bm"#),
+        (#"\\bmod\b"#, #"\\;\\mathrm{mod}\\;"#),
+        (#"\\pmod\s*\{([^{}]*)\}"#, #"\\;(\\mathrm{mod}\\;$1)"#),
+        (#"\\not\s*="#, #"\\neq"#),
+        (#"\\coloneqq\b"#, ":="),
+        (#"\\begin\{(align|equation|gather|multline)\*?\}"#, #"\\begin{$1}"#),
+        (#"\\end\{(align|equation|gather|multline)\*?\}"#, #"\\end{$1}"#),
+        (#"\\begin\{align\}"#, #"\\begin{aligned}"#),
+        (#"\\end\{align\}"#, #"\\end{aligned}"#),
+        (#"\\begin\{multline\}"#, #"\\begin{gather}"#),
+        (#"\\end\{multline\}"#, #"\\end{gather}"#),
+        (#"\\(?:begin|end)\{equation\}"#, ""),
+    ]
 }
 
 private struct SendableRendered: @unchecked Sendable {

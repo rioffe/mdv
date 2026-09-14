@@ -75,7 +75,30 @@ $$
 | $e$      | Euler's number     |
 | $\phi$   | $\frac{1+\sqrt5}{2}$ |
 
-### Heading with $\Sigma$ in it
+### Heading with $\Sigma$ in it (math scales with the heading)
+
+## $\pi$ at h2 size, $\frac{a}{b}$ too
+
+## Beyond SwiftMath's built-ins
+
+Symbols mdv registers itself: $a \gtrsim b$, $a \lesssim b$, $\therefore$,
+$\because$, $p \implies q$, $\iint_D f\,dA$, $x_1, \dots, x_n$,
+$\varnothing$, $\Box$, $\checkmark$, $\hookrightarrow$, $\rightleftharpoons$,
+$\nexists$, $\leqslant$, $\#$, $\_$.
+
+Commands rewritten into ones the parser knows: $\operatorname{argmax}_x f(x)$,
+$a \bmod b$, $a \equiv b \pmod{n}$, $\dfrac{1}{2}$, $\boldsymbol{v}$, $x \coloneqq y$,
+$a \not= b$, and `align`/`equation`/`multline` environments:
+
+$$
+\begin{align*}
+  \nabla \cdot \mathbf{E} &= \rho / \varepsilon_0 \\
+  \nabla \cdot \mathbf{B} &= 0
+\end{align*}
+$$
+
+Still unsupported (shows the source): $\boxed{x}$, $\underbrace{a+b}_{c}$,
+$\stackrel{?}{=}$, $\substack{a \\ b}$, `\&`.
 
 ## Things that must NOT become math
 
