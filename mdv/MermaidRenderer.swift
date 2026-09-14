@@ -671,6 +671,7 @@ enum MDVMermaidPipeline {
                 options: .regularExpression
             )
         }
+        joined = normalizeColors(in: joined)
         guard joined.contains("<") else { return joined }
         return joined.replacingOccurrences(
             of: #"</?(?:b|i|u|s|strong|em|small|sup|sub|span|code|tt|font|mark)(?:\s[^<>]*)?>"#,
@@ -678,6 +679,50 @@ enum MDVMermaidPipeline {
             options: [.regularExpression, .caseInsensitive]
         )
     }
+
+    /// The library's `BMColor(hex:)` accepts only 6- or 8-digit hex and turns
+    /// anything else into black — so `style RET fill:#eee` painted a black
+    /// box. Expand CSS shorthand (`#eee` → `#eeeeee`, `#abcd` → `#aabbccdd`)
+    /// and translate the CSS colour names Mermaid docs actually use.
+    static func normalizeColors(in source: String) -> String {
+        guard source.contains("fill") || source.contains("stroke") || source.contains("color") else { return source }
+        var out = source
+        // Only touch styling lines; a label could legitimately contain "#abc".
+        let lines = out.components(separatedBy: "\n").map { line -> String in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("style ") || t.hasPrefix("classDef ") || t.hasPrefix("linkStyle ") else { return line }
+            var l = line.replacingOccurrences(
+                of: #"#([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])?\b"#,
+                with: "#$1$1$2$2$3$3$4$4",
+                options: .regularExpression
+            )
+            for (name, hex) in cssColorNames {
+                l = l.replacingOccurrences(
+                    of: #"(?i)((?:fill|stroke|color)\s*:\s*)\#(name)\b"#,
+                    with: "$1\(hex)",
+                    options: .regularExpression
+                )
+            }
+            return l
+        }
+        out = lines.joined(separator: "\n")
+        return out
+    }
+
+    private static let cssColorNames: [(String, String)] = [
+        ("white", "#ffffff"), ("black", "#000000"), ("red", "#ff0000"), ("green", "#008000"),
+        ("blue", "#0000ff"), ("yellow", "#ffff00"), ("orange", "#ffa500"), ("purple", "#800080"),
+        ("gray", "#808080"), ("grey", "#808080"), ("lightgray", "#d3d3d3"), ("lightgrey", "#d3d3d3"),
+        ("darkgray", "#a9a9a9"), ("silver", "#c0c0c0"), ("pink", "#ffc0cb"), ("lightblue", "#add8e6"),
+        ("lightgreen", "#90ee90"), ("lightyellow", "#ffffe0"), ("gold", "#ffd700"), ("teal", "#008080"),
+        ("navy", "#000080"), ("maroon", "#800000"), ("olive", "#808000"), ("cyan", "#00ffff"),
+        ("magenta", "#ff00ff"), ("brown", "#a52a2a"), ("beige", "#f5f5dc"), ("ivory", "#fffff0"),
+        ("lavender", "#e6e6fa"), ("coral", "#ff7f50"), ("salmon", "#fa8072"), ("tomato", "#ff6347"),
+        ("crimson", "#dc143c"), ("indigo", "#4b0082"), ("violet", "#ee82ee"), ("khaki", "#f0e68c"),
+        ("tan", "#d2b48c"), ("wheat", "#f5deb3"), ("mintcream", "#f5fffa"), ("honeydew", "#f0fff0"),
+        ("aliceblue", "#f0f8ff"), ("whitesmoke", "#f5f5f5"), ("gainsboro", "#dcdcdc"), ("snow", "#fffafa"),
+        ("transparent", "#00000000"), ("none", "#00000000"),
+    ]
 
     // The parser lets a node be claimed by several subgraphs (e.g. `A --> B`
     // inside `subgraph X` and `B` declared in `subgraph Y`). The layout builder

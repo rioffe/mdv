@@ -53,6 +53,10 @@ measurably lighter (mean ink 120 vs 90 on 0–255, half as many near-black
 pixels) — the "washed out" look. A faux-bold fill+stroke was tried first
 and made it worse (grey fringe). Same size as document math (16pt).
 
+**Colours.** `BMColor(hex:)` only understands 6/8-digit hex; `#eee` or
+`fill:white` became *black*. `normalizeColors` expands CSS shorthand and
+translates common colour names on `style`/`classDef`/`linkStyle` lines.
+
 **xychart.** The parser only knows `line [...]`; Mermaid's named form
 `line "interest" [...]` is rewritten to it in `sanitize`. Series names
 are lost — the library's legend is hardcoded "Line 1/2", and there is no
