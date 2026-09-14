@@ -29,3 +29,36 @@ last subgraph that mentioned it. Applies to flowcharts and state diagrams.
   `~/Library/Logs/DiagnosticReports/mdv-*.ips` and query
   `~/Library/Application Support/mdv/mdv.db`
   (`select path from articles order by indexed_at desc`).
+
+## LaTeX math (2026-09-14)
+
+`$…$` / `$$…$$` are rendered by rewriting each span into an image
+reference (`![](mdv-math://inline|display/<base64url>?s=<pt>&c=<rrggbbaa>)`)
+before the block reaches MarkdownUI, then typesetting those URLs with
+SwiftMath in `MathInlineImageProvider` (spans inside text) and
+`MathDisplayView` (image-only paragraphs, via `LocalImageProvider`). See
+the header comment in `mdv/MathRenderer.swift`.
+
+**SwiftMath is vendored** (`Vendor/SwiftMath`, MIT) rather than a package
+dependency: upstream ships fonts as a SwiftPM resource bundle whose
+generated `Bundle.module` only looks at the *root* of the app bundle, and
+codesign refuses to sign anything there ("unsealed contents present in the
+bundle root"). The vendored copy loads `mathFonts.bundle` from
+`Contents/Resources` instead (`build.sh` copies it). Only Latin Modern
+Math is shipped. Details in `Vendor/SwiftMath/README.md`.
+
+**Known limitation — inline baseline.** SwiftUI puts a `Text(Image)` with
+its bottom on the text baseline and MarkdownUI's `TextInlineRenderer`
+builds inline images as bare `Text(image)`, so inline math with descenders
+(`$x_i$`, `$\frac{1}{2}$`) sits `descent` points too high. Verified that
+`NSImage.alignmentRect` is ignored and that `Text(image).baselineOffset(-descent)`
+would fix it — but that needs a one-line patch inside MarkdownUI
+(`Sources/MarkdownUI/Renderer/TextInlineRenderer.swift`, `renderImage`),
+i.e. a fork or a vendored copy. Display math is unaffected.
+
+**Delimiter rules** follow Pandoc's `tex_math_dollars`: opening `$` needs a
+non-space after it, closing `$` needs a non-space before it and no digit
+after it, no bare `$` inside, and a span never crosses a backtick. So
+"$5 and $10", "$5-$10", `\$`, and `$HOME` in code all stay literal.
+`ParsedDocument.parseBlocks` treats an unclosed `$$` line like a code fence
+so blank lines inside a display block don't split it.

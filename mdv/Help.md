@@ -38,6 +38,11 @@ Every program eventually evolves bookmarks. We did not fight it.
 
 A frustrated, untalented graphic designer (the author) could not resist letting two LLMs argue with him about typography. The result is several themes. Pick one from the toolbar. Do not @ me about font choices.
 
+## Diagrams and math
+
+- ` ```mermaid ` fences render as diagrams. Hover for the toolbar: switch style, show the source, export a PNG.
+- `$…$` renders inline LaTeX math and `$$…$$` renders a display equation, typeset natively in Latin Modern Math. Right-click a display equation to copy its LaTeX. `\$` and dollars in code stay dollars; "$5 and $10" stays prose.
+
 ## Editor integration
 
 - **⌘E** — open the current file in your external editor.

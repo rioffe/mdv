@@ -2031,9 +2031,17 @@ struct ContentView: View {
             Text(highlightedAttributedString(for: block, idx: idx))
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            Markdown(smartTypographyEnabled ? smartenMarkdown(block) : block)
+            // Math spans become image references first; smartening runs
+            // after so it never touches LaTeX (it already skips `](…)` URLs).
+            let withMath = MathMarkdown.rewrite(
+                block,
+                fontSize: themes.current.baseFontSize * themes.fontScale,
+                color: NSColor(themes.current.text)
+            )
+            Markdown(smartTypographyEnabled ? smartenMarkdown(withMath) : withMath)
                 .markdownTheme(themes.current.markdownTheme(scale: themes.fontScale))
                 .markdownCodeSyntaxHighlighter(.mdv(theme: themes.current))
+                .markdownInlineImageProvider(MathInlineImageProvider())
                 .markdownImageProvider(LocalImageProvider(
                     baseURL: currentDocumentDirectory,
                     loadRemoteImages: loadRemoteImages
@@ -2798,7 +2806,7 @@ fileprivate struct ParsedDocument: Equatable {
         // code-blocks-or-prose, which mangles syntax highlighting.
         var result: [String] = []
         var current: [String] = []
-        var fenceMarker: String? = nil  // nil → outside, "```" or "~~~" → inside
+        var fenceMarker: String? = nil  // nil → outside, "```" / "~~~" / "$$" → inside
         let lines = raw.components(separatedBy: "\n")
 
         func flush() {
@@ -2812,9 +2820,19 @@ fileprivate struct ParsedDocument: Equatable {
             let trimmedStart = line.drop(while: { $0 == " " })
             if let marker = fenceMarker {
                 current.append(line)
-                if trimmedStart.hasPrefix(marker) {
+                // Code fences close at line start; a `$$` closer may trail
+                // the last line of the formula.
+                if marker == "$$" ? line.contains("$$") : trimmedStart.hasPrefix(marker) {
                     fenceMarker = nil
                 }
+                continue
+            }
+            // Display math opened on this line but not closed on it: blank
+            // lines inside belong to the formula, same as a code fence.
+            if trimmedStart.hasPrefix("$$"), !trimmedStart.dropFirst(2).contains("$$") {
+                if !current.isEmpty { flush() }
+                current.append(line)
+                fenceMarker = "$$"
                 continue
             }
             if trimmedStart.hasPrefix("```") {
@@ -3182,7 +3200,10 @@ struct LocalImageProvider: ImageProvider {
     @ViewBuilder
     private func content(for url: URL) -> some View {
         let resolved = resolve(url)
-        if resolved.scheme == "data" {
+        if resolved.scheme == MathSpec.scheme, let spec = MathSpec(url: resolved) {
+            // A `$$…$$` paragraph, rewritten by MathMarkdown.
+            MathDisplayView(spec: spec)
+        } else if resolved.scheme == "data" {
             dataURIImage(resolved)
         } else if resolved.isFileURL {
             localFileImage(resolved)
