@@ -266,8 +266,10 @@ struct MDVMermaidDiagramView: View {
     let theme: MDVTheme
     let style: MermaidRenderStyle
 
+    @State private var prepared: MDVMermaidPrepared?
     @State private var image: NSImage?
     @State private var failed = false
+    @State private var availableWidth: CGFloat = 0
     @State private var zoom: CGFloat = 1
     @State private var committedZoom: CGFloat = 1
 
@@ -275,12 +277,26 @@ struct MDVMermaidDiagramView: View {
         MDVMermaidRenderKey(source: source, theme: theme, style: style)
     }
 
+    /// Width the diagram is drawn at: its natural width, or the column if
+    /// that's narrower. Never upscaled — a bitmap stretched past 1:1 is
+    /// what "washed out" looks like. Whole points so the raster lands on
+    /// the pixel grid.
+    private var displayWidth: CGFloat {
+        guard let prepared, availableWidth > 0 else { return 0 }
+        return floor(min(prepared.size.width, max(availableWidth - 36, 1)))
+    }
+
+    private var displayHeight: CGFloat {
+        guard let prepared, displayWidth > 0 else { return 0 }
+        return ceil(displayWidth * prepared.size.height / prepared.size.width)
+    }
+
     var body: some View {
         Group {
-            if let image {
-                diagramBody(for: image)
-            } else if failed {
+            if failed {
                 MermaidFallbackView(source: source, theme: theme)
+            } else if let image, prepared != nil {
+                diagramBody(for: image)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -289,47 +305,68 @@ struct MDVMermaidDiagramView: View {
                     .padding(.vertical, 16)
             }
         }
+        .frame(maxWidth: .infinity)
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { availableWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { availableWidth = $0 }
+            }
+        )
         .task(id: renderKey) {
             failed = false
+            prepared = nil
             image = nil
             zoom = 1
             committedZoom = 1
-            if let rendered = await MDVMermaidImageCache.shared.image(source: source, theme: theme, style: style, key: renderKey) {
-                if !Task.isCancelled { image = rendered }
+            if let result = await MDVMermaidImageCache.shared.prepared(source: source, theme: theme, style: style, key: renderKey) {
+                if !Task.isCancelled { prepared = result }
             } else if !Task.isCancelled {
                 failed = true
             }
         }
+        // Re-rasterize when the column width or the committed zoom changes.
+        // Layout is cached; this is just CoreText drawing at the new size.
+        .task(id: RasterRequest(key: renderKey, width: displayWidth * committedZoom, ready: prepared != nil)) {
+            guard let prepared, displayWidth > 0 else { return }
+            let width = floor(displayWidth * committedZoom)
+            let raster = await MDVMermaidImageCache.shared.raster(prepared, key: renderKey, width: width)
+            if !Task.isCancelled { image = raster }
+        }
+    }
+
+    private struct RasterRequest: Hashable {
+        let key: MDVMermaidRenderKey
+        let width: CGFloat
+        let ready: Bool
     }
 
     @ViewBuilder
     private func diagramBody(for image: NSImage) -> some View {
-        let aspect = image.size.width > 0 ? image.size.width / image.size.height : 1
         let baseImage = Image(nsImage: image)
             .resizable()
             .interpolation(.high)
-            .aspectRatio(aspect, contentMode: .fit)
+            .aspectRatio(contentMode: .fit)
 
         if zoom > 1.01 {
             // Zoomed: inner ScrollView for panning. Pin the container height
-            // to the unzoomed fit height so the document doesn't reflow during pinch.
-            GeometryReader { proxy in
-                let fitWidth = max(proxy.size.width - 36, 1)
-                let fitHeight = fitWidth / aspect
-                ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                    baseImage
-                        .frame(width: fitWidth * zoom, height: fitHeight * zoom)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                }
+            // to the unzoomed fit height so the document doesn't reflow during
+            // pinch. The raster is redone at the committed zoom, so only the
+            // in-flight gesture shows a scaled bitmap.
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                baseImage
+                    .frame(width: displayWidth * zoom, height: displayHeight * zoom)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
             }
-            .frame(height: 540)
+            .frame(height: min(displayHeight + 24, 540))
             .gesture(mermaidZoomGesture)
             .accessibilityLabel("Mermaid diagram")
         } else {
-            // Unzoomed: render inline at the container width × intrinsic aspect.
-            // No inner ScrollView, so wheel events bubble up to the document scroll.
+            // Unzoomed: drawn 1:1 at displayWidth, centred in the column. No
+            // inner ScrollView, so wheel events bubble up to the document scroll.
             baseImage
+                .frame(width: displayWidth * zoom, height: displayHeight * zoom)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
@@ -374,33 +411,67 @@ struct MDVMermaidRenderKey: Hashable {
     }
 }
 
+/// Layout output, kept so the diagram can be re-drawn at any width without
+/// running ELK again. `math` holds typeset `$$` node labels (block-based
+/// NSImages, so they re-rasterize crisply at whatever scale they're drawn).
+final class MDVMermaidPrepared: @unchecked Sendable {
+    let positioned: PositionedGraph
+    let theme: DiagramTheme
+    let math: [String: NSImage]
+    /// Natural size in points.
+    let size: CGSize
+
+    init(positioned: PositionedGraph, theme: DiagramTheme, math: [String: NSImage]) {
+        self.positioned = positioned
+        self.theme = theme
+        self.math = math
+        self.size = CGSize(width: max(1, positioned.width), height: max(1, positioned.height))
+    }
+}
+
 final class MDVMermaidImageCache {
     static let shared = MDVMermaidImageCache()
 
-    private let entries: NSCache<NSString, MDVMermaidImageCacheEntry> = {
-        let cache = NSCache<NSString, MDVMermaidImageCacheEntry>()
+    private let layouts: NSCache<NSString, MDVMermaidPrepared> = {
+        let cache = NSCache<NSString, MDVMermaidPrepared>()
         cache.countLimit = 96
-        cache.totalCostLimit = 128 * 1024 * 1024
         return cache
     }()
 
-    func image(source: String, theme: MDVTheme, style: MermaidRenderStyle, key: MDVMermaidRenderKey) async -> NSImage? {
-        if let cached = entries.object(forKey: key.cacheID) { return cached.image }
-        let rendered = await renderImage(source: source, theme: theme, style: style, scale: key.scale)
-        let entry = MDVMermaidImageCacheEntry(image: rendered)
-        entries.setObject(entry, forKey: key.cacheID, cost: max(rendered?.bitmapCost ?? 1, 1))
-        return rendered
+    private let rasters: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 192
+        cache.totalCostLimit = 192 * 1024 * 1024
+        return cache
+    }()
+
+    func prepared(source: String, theme: MDVTheme, style: MermaidRenderStyle, key: MDVMermaidRenderKey) async -> MDVMermaidPrepared? {
+        if let cached = layouts.object(forKey: key.cacheID) { return cached }
+        let diagramTheme = style.diagramTheme(for: theme)
+        let result = await Task.detached(priority: .userInitiated) {
+            try? MDVMermaidPipeline.prepare(source: source, theme: diagramTheme)
+        }.value
+        if let result { layouts.setObject(result, forKey: key.cacheID) }
+        return result
     }
 
-    private func renderImage(source: String, theme: MDVTheme, style: MermaidRenderStyle, scale: CGFloat) async -> NSImage? {
-        let diagramTheme = style.diagramTheme(for: theme)
+    /// The diagram drawn `width` points wide at the key's backing scale.
+    func raster(_ prepared: MDVMermaidPrepared, key: MDVMermaidRenderKey, width: CGFloat) async -> NSImage? {
+        let id = "\(key.cacheID)|w=\(width)" as NSString
+        if let cached = rasters.object(forKey: id) { return cached }
+        let scale = key.scale
+        let image = await Task.detached(priority: .userInitiated) {
+            SendableMermaidImage(image: MDVMermaidPipeline.rasterize(prepared, width: width, scale: scale))
+        }.value.image
+        if let image { rasters.setObject(image, forKey: id, cost: max(image.bitmapCost, 1)) }
+        return image
+    }
+
+    /// Natural-size image at 2× — for PNG export.
+    func image(source: String, theme: MDVTheme, style: MermaidRenderStyle, key: MDVMermaidRenderKey) async -> NSImage? {
+        guard let prepared = await prepared(source: source, theme: theme, style: style, key: key) else { return nil }
         return await Task.detached(priority: .userInitiated) {
-            guard let image = try? MDVMermaidPipeline.renderImage(
-                source: source,
-                theme: diagramTheme,
-                scale: scale
-            ) else { return SendableMermaidImage(image: nil) }
-            return SendableMermaidImage(image: image)
+            SendableMermaidImage(image: MDVMermaidPipeline.rasterize(prepared, width: ceil(prepared.size.width), scale: 2))
         }.value.image
     }
 }
@@ -410,9 +481,9 @@ final class MDVMermaidImageCache {
 // reaches the ELK layout engine. ELK enforces its invariants with `assert`,
 // which is uncatchable and takes the whole app down.
 enum MDVMermaidPipeline {
-    /// Returns the diagram upright (the library draws in a y-down context
-    /// and hands back an upside-down bitmap).
-    static func renderImage(source: String, theme: DiagramTheme, scale: CGFloat) throws -> NSImage? {
+    /// Parse, repair, typeset math labels, and run ELK. The expensive half;
+    /// `rasterize` does the rest and can be repeated at any width.
+    static func prepare(source: String, theme: DiagramTheme) throws -> MDVMermaidPrepared {
         var graph = try MermaidParser.parse(sanitize(source))
         var mathNodes: [String: NSImage] = [:]
         switch graph.typedPayload {
@@ -424,11 +495,56 @@ enum MDVMermaidPipeline {
             break
         }
         let positioned = try GraphLayout().layout(graph)
-        guard let base = MermaidImageRenderer(theme: theme)
-            .renderImage(from: positioned, scale: scale)?
-            .flippedVertically() else { return nil }
-        guard !mathNodes.isEmpty, let nodes = positioned.flowchartNodes else { return base }
-        return composite(base, nodes: nodes, math: mathNodes, scale: scale)
+        return MDVMermaidPrepared(positioned: positioned, theme: theme, math: mathNodes)
+    }
+
+    /// Draws the laid-out diagram `width` points wide (aspect preserved) into
+    /// a bitmap at `scale` px/pt, upright. Text is drawn by CoreText at the
+    /// final size instead of being drawn once and resampled, which is what
+    /// keeps labels as sharp as the document text around them.
+    static func rasterize(_ prepared: MDVMermaidPrepared, width: CGFloat, scale: CGFloat) -> NSImage? {
+        let natural = prepared.size
+        let fit = max(width, 1) / natural.width
+        let size = CGSize(width: max(1, floor(natural.width * fit)), height: max(1, ceil(natural.height * fit)))
+        guard let ctx = CGContext(
+            data: nil,
+            width: Int(size.width * scale), height: Int(size.height * scale),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.setAllowsFontSmoothing(true)
+        ctx.setShouldSmoothFonts(true)
+
+        // The library draws y-down. Flip once here instead of flipping the
+        // finished bitmap.
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: size.height)
+        ctx.scaleBy(x: fit, y: -fit)
+        DiagramRenderer(theme: prepared.theme).render(
+            prepared.positioned,
+            in: ctx,
+            bounds: CGRect(origin: .zero, size: natural)
+        )
+        ctx.restoreGState()
+
+        // Typeset math over its nodes (y-up, in display points).
+        if !prepared.math.isEmpty, let nodes = prepared.positioned.flowchartNodes {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+            for node in nodes {
+                guard let image = prepared.math[node.id] else { continue }
+                let w = image.size.width * fit, h = image.size.height * fit
+                let x = (node.x + (node.width - image.size.width) / 2) * fit
+                let yTop = (node.y + (node.height - image.size.height) / 2) * fit
+                image.draw(in: CGRect(x: x, y: size.height - yTop - h, width: w, height: h))
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        guard let cg = ctx.makeImage() else { return nil }
+        return NSImage(cgImage: cg, size: size)
     }
 
     // MARK: LaTeX in labels
@@ -504,36 +620,6 @@ enum MDVMermaidPipeline {
         return text
     }
 
-    /// Draws each typeset math image centred on its node. `base` is upright;
-    /// node rects are in the library's y-down layout space, which maps 1:1
-    /// onto the image in points.
-    private static func composite(_ base: NSImage, nodes: [PositionedNode], math: [String: NSImage], scale: CGFloat) -> NSImage {
-        let size = base.size
-        guard let ctx = CGContext(
-            data: nil,
-            width: Int(size.width * scale), height: Int(size.height * scale),
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return base }
-        ctx.scaleBy(x: scale, y: scale)
-
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-        base.draw(in: CGRect(origin: .zero, size: size))
-        for node in nodes {
-            guard let image = math[node.id] else { continue }
-            let w = image.size.width, h = image.size.height
-            let x = node.x + (node.width - w) / 2
-            let yTop = node.y + (node.height - h) / 2
-            image.draw(in: CGRect(x: x, y: size.height - yTop - h, width: w, height: h))
-        }
-        NSGraphicsContext.restoreGraphicsState()
-
-        guard let cg = ctx.makeImage() else { return base }
-        return NSImage(cgImage: cg, size: size)
-    }
-
     /// Two things Mermaid.js accepts that BeautifulMermaid's parser doesn't:
     ///
     /// - A YAML front-matter block (`---\nconfig: …\n---`) before the
@@ -551,7 +637,16 @@ enum MDVMermaidPipeline {
            let close = lines[(first + 1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) {
             lines.removeSubrange(first...close)
         }
-        let joined = lines.joined(separator: "\n")
+        var joined = lines.joined(separator: "\n")
+        // xychart: `line "interest" [...]` / `bar "x" [...]` — the parser
+        // only knows the unnamed form.
+        if joined.contains("xychart") {
+            joined = joined.replacingOccurrences(
+                of: #"(?m)^(\s*)(line|bar)\s+"[^"]*"\s*\["#,
+                with: "$1$2 [",
+                options: .regularExpression
+            )
+        }
         guard joined.contains("<") else { return joined }
         return joined.replacingOccurrences(
             of: #"</?(?:b|i|u|s|strong|em|small|sup|sub|span|code|tt|font|mark)(?:\s[^<>]*)?>"#,
@@ -578,14 +673,6 @@ enum MDVMermaidPipeline {
         }
         model.subgraphs.forEach(claim)
         model.subgraphs.forEach(prune)
-    }
-}
-
-final class MDVMermaidImageCacheEntry {
-    let image: NSImage?
-
-    init(image: NSImage?) {
-        self.image = image
     }
 }
 
@@ -651,27 +738,6 @@ private extension NSImage {
             return max(Int(size.width * size.height * 4), 1)
         }
         return max(cgImage.bytesPerRow * cgImage.height, 1)
-    }
-
-    func flippedVertically() -> NSImage? {
-        var rect = CGRect(origin: .zero, size: size)
-        guard let cgImage = cgImage(forProposedRect: &rect, context: nil, hints: nil),
-              let context = CGContext(
-                data: nil,
-                width: cgImage.width,
-                height: cgImage.height,
-                bitsPerComponent: cgImage.bitsPerComponent,
-                bytesPerRow: 0,
-                space: cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
-
-        context.translateBy(x: 0, y: CGFloat(cgImage.height))
-        context.scaleBy(x: 1, y: -1)
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
-
-        guard let flipped = context.makeImage() else { return nil }
-        return NSImage(cgImage: flipped, size: size)
     }
 }
 

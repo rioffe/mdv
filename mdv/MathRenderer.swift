@@ -435,10 +435,34 @@ final class MathImageCache {
         )
         let (error, image, layout) = math.asImage()
         if error == nil, let image, let layout {
-            return MathRendered(image: image, ascent: layout.ascent, descent: layout.descent, error: nil)
+            // SwiftMath hands back a drawing-handler NSImage. Bake it to a
+            // bitmap: SwiftUI treats handler-backed images inside `Text` as
+            // dynamic and keeps re-resolving the paragraph, which showed up as
+            // a steady 10–20 % CPU on any page with inline math.
+            let baked = rasterized(image, scale: NSScreen.main?.backingScaleFactor ?? 2) ?? image
+            return MathRendered(image: baked, ascent: layout.ascent, descent: layout.descent, error: nil)
         }
         let message = error?.localizedDescription ?? "LaTeX could not be rendered"
         return MathRendered(image: fallbackImage(for: spec), ascent: spec.fontSize, descent: 0, error: message)
+    }
+
+    private static func rasterized(_ image: NSImage, scale: CGFloat) -> NSImage? {
+        let size = image.size
+        guard size.width > 0, size.height > 0,
+              let ctx = CGContext(
+                data: nil,
+                width: Int(ceil(size.width * scale)), height: Int(ceil(size.height * scale)),
+                bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        image.draw(in: CGRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let cg = ctx.makeImage() else { return nil }
+        return NSImage(cgImage: cg, size: size)
     }
 
     /// The raw source in monospace, so a span SwiftMath can't parse still
@@ -453,10 +477,11 @@ final class MathImageCache {
             ]
         )
         let size = text.size()
-        return NSImage(size: NSSize(width: ceil(size.width), height: ceil(size.height)), flipped: false) { rect in
+        let image = NSImage(size: NSSize(width: ceil(size.width), height: ceil(size.height)), flipped: false) { rect in
             text.draw(at: .zero)
             return true
         }
+        return rasterized(image, scale: NSScreen.main?.backingScaleFactor ?? 2) ?? image
     }
 }
 

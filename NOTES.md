@@ -35,6 +35,23 @@ sizes like the math image, ELK lays the node out at that size, and
 coordinates map 1:1 onto the image in points). Math mixed with text, and
 math in edge labels, uses the Unicode approximation (`MathMarkdown.plainText`).
 
+**Resolution.** Diagrams used to be rasterised once at natural size and
+then stretched to the column by SwiftUI — upscaled and resampled at
+fractional offsets, which reads as "washed out". `MDVMermaidPrepared` now
+keeps the ELK layout, and `MDVMermaidPipeline.rasterize` redraws it with
+CoreText at the exact display width (never wider than natural, whole
+points) whenever the column or committed zoom changes. Rasters are
+cached per width. Same for math: SwiftMath's handler-backed NSImages are
+baked to bitmaps in `MathImageCache` — SwiftUI treats handler images
+inside `Text` as dynamic and re-resolves the paragraph continuously
+(10–20 % idle CPU on any page with inline math until this).
+
+**xychart.** The parser only knows `line [...]`; Mermaid's named form
+`line "interest" [...]` is rewritten to it in `sanitize`. Series names
+are lost — the library's legend is hardcoded "Line 1/2", and there is no
+model field to carry them. `themeCSS` in front matter (dashes, widths)
+is dropped with the front matter.
+
 **Still true:**
 - Other ELK `assert`s may exist for other malformed diagrams. `make` builds
   debug (asserts on); a release build strips them.
