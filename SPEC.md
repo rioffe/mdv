@@ -50,7 +50,7 @@ Sources are cited as `[Help §…]`, `[README]`, `[NOTES]`, or a file path in `m
 
 | ID | Statement |
 | -- | --------- |
-| **R-07** | Markdown MUST be rendered as GitHub-flavoured Markdown (cmark-gfm: tables, task lists, strikethrough, autolinks, footnotes) using the active theme's typography (R-27). `[README; ThemeManager.markdownTheme]` |
+| **R-07** | Markdown MUST be rendered as GitHub-flavoured Markdown (cmark-gfm: tables, task lists, strikethrough, autolinks, footnotes) using the active theme's typography (R-29). `[README; ThemeManager.markdownTheme]` |
 | **R-08** | Fenced code blocks MUST be syntax-highlighted with tree-sitter for the languages in K-05 (with the alias map in C-05), and MUST render as plain monospaced text — never an error — for any other or missing language hint. The block MUST show a language label, a hover-revealed toolbar (wrap toggle, copy), and a context menu; blocks in a shell language whose lines are at least half `$ `/`# `-prompted MUST additionally offer *Copy Without Prompts*. `[CodeRenderer; CodeBlockChrome]` |
 | **R-09** | A ` ```mermaid ` fence MUST render as a diagram image drawn natively (C-06). The block MUST offer: a style menu (Document, Light, Dark, Tokyo Night, Catppuccin — the choice persisted document-wide in `mdv.mermaid.style`), *Show Mermaid source* (toggles to a highlighted source view), *Export diagram as PNG*, copy source, and pinch-to-zoom between $0.5\times$ and $4\times$. `[Help §Diagrams and math; MermaidCodeBlockChrome]` |
 | **R-10** | Before parsing, Mermaid source MUST be sanitised per C-06.1 so that the Mermaid.js constructs listed there render; after layout, the corrections in C-06.2 MUST be applied. A diagram whose source the library cannot parse (e.g. `timeline`, `gantt`, `pie`, `mindmap`) MUST render the fallback: the text "Mermaid diagram could not be rendered" and the source in monospace. `[NOTES §Mermaid]` |
@@ -347,3 +347,129 @@ codesign --force --sign - --entitlements mdv/mdv.entitlements build/mdv.app     
 ```
 
 The vendored SwiftMath resolves `mathFonts.bundle` from `Bundle.main` first and from `Vendor/SwiftMath/mathFonts.bundle` (by `#filePath`) when running unbundled (`swift run`).
+
+## 5. Interface specification
+
+### 5.1 GUI: menus and shortcuts
+
+| Menu · item | Shortcut | Effect | Errors / disabled |
+| ----------- | -------- | ------ | ----------------- |
+| mdv · Install Command Line Tool… | — | Symlink `/usr/local/bin/mdv` → `Contents/Resources/mdv` (asks for admin rights) | failure: system beep, symlink untouched |
+| File · Open… | ⌘O | Open panel; loads into this window (R-01) | cancel: no-op |
+| File · Open in New Window… | ⌘⇧O | Open panel; new window | — |
+| File · Edit · Edit Current File | ⌘E | Open current file in the chosen editor (R-23) | no editor: prompts to choose |
+| File · Edit · Choose Editor… / Forget Editor | — | Set / clear `mdv_editor_app_path` | — |
+| Edit · Find… | ⌘F | Find bar, or global search when the sidebar was last focused (R-24) | — |
+| Edit · Search History… | ⌘⇧F | Focus global search (R-25) | — |
+| Edit · Copy / Select All | ⌘C / ⌘A | Block selection (R-22) when the document is active; text field otherwise | — |
+| Navigate · Back / Forward | ⌘← / ⌘→ | History stacks (R-18) | disabled when empty |
+| View · Show/Hide Sidebar | ⌃⌘S | Toggle history sidebar (R-20) | — |
+| View · Zoom In / Zoom Out / Actual Size | ⌘= / ⌘- / — | R-30 | Actual Size disabled at 1.0 |
+| View · Smart Typography | — | Toggle R-17; label reads "(off for this theme)" and is disabled when the theme opts out | — |
+| View · Load Remote Images | — | Toggle R-16 | — |
+| Bookmarks · Bookmark Current Spot | ⌘D | R-27 | — |
+| Bookmarks · Set Placeholder / Jump to Placeholder | ⌘⇧0 / ⌘0 | R-28 | Jump disabled when none |
+| Bookmarks · slot 1…5 | ⌘1…⌘5 | Open bookmark *n* (R-27) | disabled when the slot is empty |
+| Help · mdv Help | ⌘? | R-31 | — |
+| Find bar | ⌘G / ⇧⌘G / Esc | next / previous / close (R-24) | stepping disabled with no matches |
+| Document | Esc | Clear block selection (R-22) | — |
+| Toolbar | — | Theme picker (nine themes + System), inspector toggle, Open, Edit | — |
+
+In-block controls: code blocks — hover toolbar (wrap, copy), context menu (Copy Code, Wrap Long Lines, Copy Without Prompts when applicable); Mermaid blocks — hover capsule (style menu, show source, export PNG, copy) and context menu (Copy Code, Show Mermaid Source / Show Diagram, Diagram Style, Export Diagram as PNG); display math — context menu (Copy LaTeX). PNG export writes the diagram at natural size, $2\times$ pixel density, to a user-chosen path; failure beeps.
+
+### 5.2 CLI: `bin/mdv`
+
+| Invocation | Behaviour | Exit |
+| ---------- | --------- | ---- |
+| `mdv` | `open <app>` | 0 |
+| `mdv FILE…` / `mdv DIR` | Each argument resolved to an absolute path; `open -a <app> <paths…>` (the app receives them via LaunchServices, R-01/R-02) | 0; `1` + `mdv: no such file: <arg>` on stderr if any argument does not exist (nothing opened) |
+| `mdv -` | stdin copied to `$(mktemp -t mdv-stdin).md`, then opened | 0 |
+| `mdv -h` / `--help` | Usage text (lines 2–9 of the script) to stdout | 0 |
+| `mdv --version` | `CFBundleShortVersionString` from the located bundle's `Info.plist` | 0 |
+| any, bundle not found | `mdv: mdv.app not found (set MDV_APP or install to /Applications)` on stderr | 1 |
+
+Bundle search order: `$MDV_APP` (if a directory) → `/Applications/mdv.app` → `~/Applications/mdv.app` → `../build/mdv.app` and `../mdv.app` relative to the script → `mdfind "kMDItemCFBundleIdentifier == 'com.mdv.app'"` (first hit).
+
+### 5.3 Build and release: `make`
+
+| Target | Effect |
+| ------ | ------ |
+| `make` / `build` | `deps` check (Swift $\geq$ 5.9, macOS $\geq$ 13, `build.sh` executable) then `./build.sh debug` → `build/mdv.app` (C-13) |
+| `release` | `./build.sh release` |
+| `run` | build + launch |
+| `install` | copy to `/Applications/mdv.app`, `lsregister -f`, then `install-cli` (sudo symlink `/usr/local/bin/mdv` → `bin/mdv`) |
+| `uninstall` | remove the symlink and `/Applications/mdv.app` |
+| `register` | `lsregister -f build/mdv.app` |
+| `clean` | remove `build/` and `.build/` |
+| `dist` | `check-version` (exact `vX.Y.Z` tag, else exit 1) → `clean` → `release` → `sign` (Developer ID, hardened runtime, timestamp; `codesign --verify --deep --strict`) → `zip-notary` → `notarize` (keychain profile) → `staple` → `zip-release` → `checksum` (`.sha256`) → `verify-release` (`spctl`) |
+| `github-release` | upload the zip and checksum to the GitHub release for the tag |
+| `icon` | regenerate `mdv/AppIcon.icns` from `MDV.png` |
+
+CI (`.github/workflows/build.yml`): on every push to `main`, build `debug` and `release` on `macos-15`, verify the bundle layout, upload `mdv-release.tar.gz`, and publish it as the rolling `latest` prerelease.
+
+### 5.4 Cross-cutting: diagnostics and failure reporting
+
+| ID | Contract |
+| -- | -------- |
+| **R-35** (above) | Nothing document-derived is logged. |
+| **C-14** | User-visible failures are reported in place, never modally: unrenderable diagram / math → fallback text in the block (R-10, R-14); missing or blocked image → placeholder in the block (R-16); PNG export or CLI-install failure → system beep; missing bookmark file → row marked as missing in the inspector (E-09); unreadable file → the window stays on its previous content (E-03). |
+
+## 6. Invariants (must hold in every valid implementation)
+
+| ID | Invariant |
+| -- | --------- |
+| **I-001** | Rendering is pure in the document: the same file bytes, theme, zoom, and preferences produce the same blocks, TOC, and rendered output; no render path reads the network except the remote-image fetch gated by R-16. |
+| **I-002** | The application MUST NOT terminate because of document content. Every third-party parser is reached only through its sanitiser (C-06.1, C-07.1/2), and every parse/layout failure becomes a fallback block. |
+| **I-003** | Document content never reaches a log, a URL, or a subprocess. The only externally visible artefacts derived from a document are the user's pasteboard (on explicit copy), a user-chosen PNG (on export), and `mdv.db`. |
+| **I-004** | The block split (C-02) is computed at most once per distinct `raw` string per load; `blocks[i]` is stable for the life of the document, so block indices used by find, TOC, selection, bookmarks, and scroll anchors refer to the same text. |
+| **I-005** | Every mermaid raster is displayed at exactly its own point size — `displaySize(for:width:)` is the single source of both the bitmap size and the view frame — so the diagram is never resampled by the view layer. |
+| **I-006** | All access to `mdv.db` goes through one connection opened `FULLMUTEX`, in WAL mode; concurrent use from the history re-index queue and the main thread is serialised by SQLite, never by the caller. |
+| **I-007** | Persistence writes are whole-row `INSERT … ON CONFLICT DO UPDATE` or single-statement updates; a crash mid-write leaves the previous row, never a partial one. |
+| **I-008** | Every `NSImage` handed to SwiftUI `Text`/`Image` for math is bitmap-backed (not drawing-handler-backed); idle CPU with math on screen is that of a static page. |
+| **I-009** | Math drawn inside a Mermaid raster is drawn at a pixel-aligned origin; its measured ink weight equals that of the same expression typeset for the document at the same size and scale. |
+| **I-010** | Heading slugs (C-11) are computed from the un-mathed heading text, so `#fragment` links written for GitHub resolve identically whether or not the heading contains `$…$`. |
+| **I-011** | The vendored SwiftMath carries exactly the patches listed in `Vendor/SwiftMath/README.md`; everything else is byte-identical to upstream v1.7.3. |
+| **I-012** | Smart typography never changes bytes inside code spans, fences, link URLs, `<…>` spans, GFM tables, thematic breaks, or math. |
+| **I-013** | The history list never exceeds 100 entries and never contains duplicates; the most recently opened path is first. |
+
+## 7. Constraints (precise and measurable)
+
+| ID | Constraint |
+| -- | ---------- |
+| **K-01** | Platform: macOS $\geq$ 13.0, Apple Silicon or Intel; toolchain: Swift $\geq$ 5.9 (`swift-tools-version: 5.9`); no Xcode project — `swift build` + `build.sh` only. |
+| **K-02** | Bundle: `CFBundleIdentifier com.mdv.app`; version `1.0.0` (1); not sandboxed; entitlement `files.user-selected.read-only`. |
+| **K-03** | History cap 100 entries. Global search returns at most 80 hits; snippets are 14 tokens. Bookmark hot-key slots: 5. |
+| **K-04** | Zoom: step $0.10$, range $[0.60, 2.50]$, default $1.0$. Sidebar width $[180, 400]$ pt (not persisted); inspector width $[180, 520]$ pt (persisted, default 240); bookmarks pane $\geq 120$ pt with the TOC keeping $\geq 80$ pt. |
+| **K-05** | Highlighted languages: C, Go, Rust, Bash, JavaScript, YAML, TOML, Python, Ruby (grammar commits pinned in `mdv/Grammars/README.md`). |
+| **K-06** | Live-reload coalescing window: 50 ms. Heading-copy flash: 0.6 s. Zoom HUD: ~0.9 s. Scroll-restore mtime tolerance: 1 s. |
+| **K-07** | Mermaid: raster width = $\lfloor \min(\text{natural}, \text{column} - 36) \rfloor$ pt at the screen backing scale; pinch zoom clamped to $[0.5, 4]$; zoomed container height $\leq 540$ pt. Caches: 96 layouts, 192 rasters, 192 MB. |
+| **K-08** | Math: inline spans typeset in `.text` style, display in `.display`; diagram-label math at 16 pt; message-label line pitch 13 pt; sequence row height 40 pt (library) grown by $(n-1)\times 13 + 4$ pt for $n$-line labels. Cache: 2048 images. |
+| **K-09** | Fingerprints: 80 characters. FTS tokenizer `unicode61 remove_diacritics 2`. |
+| **K-10** | Typography defaults: body 16 pt, line spacing $0.30\,\mathrm{em}$, heading scale $1.75 / 1.4 / 1.15$, article max width 860 pt, gutter 40 pt (per-theme overrides in `TYPOGRAPHY.md`). |
+| **K-11** | Release artefacts: `dist/mdv-<version>-macos.zip` + `.sha256`, Developer ID signed with hardened runtime and timestamp, notarised and stapled; `<version>` equals the tag without `v`. |
+| **K-12** | Ad-hoc-signed development bundles MUST pass `codesign --verify --deep --strict`; nothing may be placed at the bundle root besides `Contents/`. |
+
+## 8. Edge cases and failure semantics
+
+| ID | Case | Semantics |
+| -- | ---- | --------- |
+| **E-01** | Mermaid node listed in two subgraphs (`A --> B` inside `subgraph X`, `B` declared in `subgraph Y`). | Ownership normalised to the last subgraph before layout (C-06.2); renders. Without this the ELK importer's `assert` aborts the process — the historical launch-crash. |
+| **E-02** | Mermaid diagram type the library lacks (`timeline`, `gantt`, `pie`, `mindmap`, `gitGraph`, …), or any other parse error. | Fallback block: "Mermaid diagram could not be rendered" + source. |
+| **E-03** | File unreadable (permissions, not UTF-8, vanished between open and read). | Load aborted; window keeps its previous document; no history entry added. |
+| **E-04** | Directory with no Markdown files. | Nothing loads; no history change. |
+| **E-05** | Link to a local Markdown path that does not exist. | Handed to the system opener (which reports the failure); no navigation. |
+| **E-06** | `#fragment` with no matching heading slug. | No-op (no scroll, no error). |
+| **E-07** | `$` in prose that is not math: `$5 and $10`, `$5-$10`, `$100/month`, `\$x\$`, `$HOME` in code, an empty `$$`. | Left literal by the delimiter rules of C-07.1 (opening followed by space, closing before space or followed by a digit, backtick crossing, escape, empty span). |
+| **E-08** | Bookmark or scroll anchor whose block moved or changed. | Resolve by fingerprint first, then clamped index (C-08); a scroll position is discarded (start at top) if the file's mtime differs by more than 1 s or the index is out of bounds. |
+| **E-09** | Bookmark whose file no longer exists. | Row shown as missing in the inspector; opening it is a no-op; the row remains until removed. |
+| **E-10** | LaTeX SwiftMath rejects (unknown command, unbalanced braces). | Source shown in monospace at $0.9\times$ size (inline) or with the parser's message (display); never blank. |
+| **E-11** | Remote image with loading off / on but unreachable / not an image. | Off: "Remote image blocked" placeholder that reveals the View menu item. On: an explicit failure placeholder (never silent nothing). |
+| **E-12** | `mdv.db` cannot be opened or a statement fails. | `NSLog("[mdv] …")`; the feature degrades (no search hits, no bookmarks, no scroll restore); viewing continues. |
+| **E-13** | Mermaid `<br>` in a sequence message that makes the label wider than its actors' gap, or taller than a row. | Gap widened and rows expanded per C-06.2; labels never cross a lifeline they don't span and never overlap the previous arrow. |
+| **E-14** | Mermaid `style … fill:#eee` / `fill:white`. | Normalised to 6-digit hex (C-06.1) — rendered as the intended colour, not black. |
+| **E-15** | `xychart` with `line "name" [...]`. | Series rendered; legend shows `Line n` (the library has no series name field). |
+| **E-16** | Math in a heading inside a table cell or list item that is the *entire* cell/item. | Rendered through the block-image path at text size, leading-aligned, not centred (MarkdownUI routes image-only paragraphs there). |
+| **E-17** | The find query matches inside a code, table, or image block. | Block tinted; no character-level highlight (those blocks cannot be re-rendered losslessly as attributed text). |
+| **E-18** | ⌘F while the history sidebar has focus. | Routes to global search (R-24), not the document find bar. |
+| **E-19** | Reload of the current file while a block selection exists. | Selection cleared; scroll position kept. |
+| **E-20** | Same file opened in two windows and edited on disk. | Each window's watcher reloads independently; scroll positions are per path, last writer wins. |
