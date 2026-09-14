@@ -497,6 +497,7 @@ enum MDVMermaidPipeline {
         switch graph.typedPayload {
         case .flowchart(var model), .stateDiagram(var model):
             normalizeSubgraphOwnership(model)
+            if graph.type == .stateDiagram { applyStateStyles(in: &model, source: sanitize(source)) }
             mathNodes = substituteMath(in: &model, theme: theme)
             graph.payload = model
         case .sequenceDiagram(var seq):
@@ -912,6 +913,7 @@ enum MDVMermaidPipeline {
             )
         }
         joined = normalizeColors(in: joined)
+        joined = mergeStateDescriptions(in: joined)
         // Parallelogram shapes `id[/text/]` and `id[\text\]`: the parser only
         // knows the trapezoids `[/…\]` / `[\…/]`, so these fall through to the
         // rectangle rule with the slashes (and quotes) left in the label.
@@ -926,6 +928,85 @@ enum MDVMermaidPipeline {
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
+    }
+
+    /// stateDiagram: Mermaid lets a state carry several `ID: text` lines
+    /// (the first is its title, the rest its body). The library's parser
+    /// keeps whichever registration of the ID comes first — often the bare
+    /// transition — and drops the rest. Fold all descriptions into one
+    /// `state "line<br/>line" as ID` alias placed right after the header,
+    /// which the parser does honour.
+    static func mergeStateDescriptions(in source: String) -> String {
+        var lines = source.components(separatedBy: "\n")
+        guard let header = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("statediagram")
+        }) else { return source }
+        let descRegex = try! NSRegularExpression(pattern: #"^\s*([\w\p{L}-]+)\s*:\s*(.+?)\s*$"#)
+        let transitionRegex = try! NSRegularExpression(pattern: #"^\s*(\[\*\]|[\w\p{L}-]+)\s*-->"#)
+        var descriptions: [(id: String, lines: [String])] = []
+        var remove = IndexSet()
+        for (i, line) in lines.enumerated() where i > header {
+            let range = NSRange(line.startIndex..., in: line)
+            guard transitionRegex.firstMatch(in: line, range: range) == nil,
+                  let m = descRegex.firstMatch(in: line, range: range),
+                  let idRange = Range(m.range(at: 1), in: line),
+                  let textRange = Range(m.range(at: 2), in: line) else { continue }
+            let id = String(line[idRange])
+            let keywords: Set<String> = ["state", "direction", "classDef", "class", "style", "note", "linkStyle"]
+            if keywords.contains(id) { continue }
+            let text = String(line[textRange])
+            if let k = descriptions.firstIndex(where: { $0.id == id }) {
+                descriptions[k].lines.append(text)
+            } else {
+                descriptions.append((id, [text]))
+            }
+            remove.insert(i)
+        }
+        guard !descriptions.isEmpty else { return source }
+        for i in remove.sorted(by: >) { lines.remove(at: i) }
+        let aliases = descriptions.map { desc -> String in
+            let label = desc.lines.joined(separator: "<br/>").replacingOccurrences(of: "\"", with: "'")
+            return "    state \"\(label)\" as \(desc.id)"
+        }
+        lines.insert(contentsOf: aliases, at: header + 1)
+        return lines.joined(separator: "\n")
+    }
+
+    /// stateDiagram: the parser ignores `classDef` / `class` / `style` lines
+    /// (flowcharts get them). Read them from the source and put them on the
+    /// model, where the shared layout resolves them like a flowchart's.
+    private static func applyStateStyles(in model: inout ParsedGraphModel, source: String) {
+        func props(_ text: String) -> [String: String] {
+            var out: [String: String] = [:]
+            for pair in text.replacingOccurrences(of: #";\s*$"#, with: "", options: .regularExpression).split(separator: ",") {
+                guard let colon = pair.firstIndex(of: ":") else { continue }
+                let key = pair[..<colon].trimmingCharacters(in: .whitespaces)
+                let value = pair[pair.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                if !key.isEmpty, !value.isEmpty { out[key] = value }
+            }
+            return out
+        }
+        for raw in source.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if let m = line.range(of: #"^classDef\s+(\w+)\s+(.+)$"#, options: .regularExpression) {
+                let parts = String(line[m]).dropFirst("classDef".count).trimmingCharacters(in: .whitespaces)
+                if let space = parts.firstIndex(of: " ") {
+                    model.classDefs[String(parts[..<space])] = props(String(parts[parts.index(after: space)...]))
+                }
+            } else if let m = line.range(of: #"^class\s+([\w\p{L}-]+(?:\s*,\s*[\w\p{L}-]+)*)\s+(\w+)\s*$"#, options: .regularExpression) {
+                let parts = String(line[m]).dropFirst("class".count).trimmingCharacters(in: .whitespaces)
+                guard let space = parts.lastIndex(of: " ") else { continue }
+                let className = String(parts[parts.index(after: space)...])
+                for id in parts[..<space].split(separator: ",") {
+                    model.classAssignments[id.trimmingCharacters(in: .whitespaces)] = className
+                }
+            } else if let m = line.range(of: #"^style\s+([\w\p{L}-]+)\s+(.+)$"#, options: .regularExpression) {
+                let parts = String(line[m]).dropFirst("style".count).trimmingCharacters(in: .whitespaces)
+                if let space = parts.firstIndex(of: " ") {
+                    model.nodeStyles[String(parts[..<space])] = props(String(parts[parts.index(after: space)...]))
+                }
+            }
+        }
     }
 
     /// The library's `BMColor(hex:)` accepts only 6- or 8-digit hex and turns

@@ -53,6 +53,14 @@ measurably lighter (mean ink 120 vs 90 on 0–255, half as many near-black
 pixels) — the "washed out" look. A faux-bold fill+stroke was tried first
 and made it worse (grey fringe). Same size as document math (16pt).
 
+**State diagrams.** The parser keeps the *first* registration of a state
+(often the bare transition) and ignores later `ID: description` lines,
+and ignores `classDef`/`class`/`style` entirely. `mergeStateDescriptions`
+folds all descriptions of an ID into one `state "a<br/>b" as ID` alias
+after the header (which the parser honours); `applyStateStyles` reads the
+style lines from the source onto the model, where the shared flowchart
+layout resolves them.
+
 **Colours.** `BMColor(hex:)` only understands 6/8-digit hex; `#eee` or
 `fill:white` became *black*. `normalizeColors` expands CSS shorthand and
 translates common colour names on `style`/`classDef`/`linkStyle` lines.
