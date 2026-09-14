@@ -482,10 +482,10 @@ The repository has **no automated test target** (D-01). Every test below is a re
 
 | ID | Test |
 | -- | ---- |
-| **T-01** | Fresh clone, `make` → `build/mdv.app` exists with every file in C-13 present; `codesign --verify --deep --strict build/mdv.app` exits 0. Proves R-34, K-12, C-01, C-13. |
+| **T-01** | Fresh clone, `make` → `build/mdv.app` exists with every file in C-13 present; `codesign --verify --deep --strict build/mdv.app` exits 0; `otool -l` shows a minimum OS of 13.0 and `Info.plist` the identifier/version of K-02. Proves R-34, K-01, K-02, K-12, C-01, C-13. |
 | **T-02** | `make dist` on a commit without an exact `vX.Y.Z` tag exits non-zero at `check-version` before building. Proves R-34, K-11. |
 | **T-03** | `bin/mdv --version` prints `1.0.0`; `bin/mdv nope.md` prints `mdv: no such file: nope.md` to stderr and exits 1; `echo '# hi' \| bin/mdv -` opens a window showing "hi"; `MDV_APP=/nonexistent bin/mdv` falls through the search order. Proves R-33, §5.2. |
-| **T-04** | `open build/mdv.app test-docs/` loads `README.md` and the sidebar lists the other `.md` files. Proves R-02, E-04 (an empty directory changes nothing). |
+| **T-04** | `open build/mdv.app test-docs/` loads `README.md` and the sidebar lists the other `.md` files. `chmod 000` a file and open it: the window keeps its previous document and history is unchanged. Proves R-02, E-03, E-04 (an empty directory changes nothing). |
 
 ### 9.2 Rendering (manual, `test-docs/`)
 
@@ -497,20 +497,20 @@ The repository has **no automated test target** (D-01). Every test below is a re
 | **T-08** | Same file: the TOC shows `Heading with Σ in it` and `π at h2 size, a/b too` (Unicode, no `$`); the `##` heading's π is visibly larger than body π. Proves R-13, R-21, C-07.3, I-010. |
 | **T-09** | `test-docs/images.md`: relative image renders; missing file shows the named placeholder; a `data:` image renders; an `https:` image shows "Remote image blocked" until View → Load Remote Images, then loads. Proves R-16, E-11. |
 | **T-10** | `test-docs/thematic-break.md` and `tables.md` with Smart Typography on: rules and tables render; inline `--flag` and code spans keep straight characters; prose quotes curl. Then switch to Phosphor: the menu item reads "(off for this theme)" and is disabled. Proves R-17, C-10, I-012. |
-| **T-11** | Zoom ⌘= five times: body text, headings, and math grow together; HUD shows 150 %; Actual Size resets; relaunch keeps 150 %. Proves R-30, K-04, C-04. |
+| **T-11** | Zoom ⌘= five times: body text, headings, and math grow together; HUD shows 150 %; Actual Size resets; relaunch keeps 150 %. Proves R-30, K-04, K-10, C-04. |
 | **T-12** | Choose System theme; toggle macOS appearance: the article switches high-contrast ↔ twilight live. Proves R-29. |
 
 ### 9.3 Mermaid (scripted via the harness, then manual)
 
 | ID | Test |
 | -- | ---- |
-| **T-13** | Harness `--scan` over every ` ```mermaid ` block in a corpus of real documents (the 52-diagram set used during development): 0 crashes; every non-`timeline` diagram renders. Proves R-10, I-002, E-01, E-02. |
+| **T-13** | Harness `--scan` over every ` ```mermaid ` block in a corpus of real documents (the 52-diagram set used during development): 0 crashes; every non-`timeline` diagram renders. Proves R-10, I-001 (run with networking disabled — output identical), I-002, E-01, E-02. |
 | **T-14** | The diagram of E-01 (two subgraphs claiming `PD`) renders with `PD` in the *last* subgraph. Proves C-06.2, E-01. |
 | **T-15** | A diagram with front matter, `<b>` labels, `[/parallelogram/]`, `style X fill:#eee` and `fill:white`: renders with clean labels and light-grey/white fills. Proves C-06.1, E-14. |
 | **T-16** | `xychart-beta` with `line "a" [...]`: two curves visible. Proves E-15. |
-| **T-17** | `test-docs/math.md` "Inside Mermaid" block: the `$$` node shows typeset math; the mixed and edge labels show Unicode. Measured offscreen at $2\times$, the node math's mean ink over pixels darker than 200 is within 10 % of the same expression typeset for the document. Proves R-15, I-009. |
+| **T-17** | `test-docs/math.md` "Inside Mermaid" block: the `$$` node shows typeset math; the mixed and edge labels show Unicode. Measured offscreen at $2\times$, the node math's mean ink over pixels darker than 200 is within 10 % of the same expression typeset for the document; the label is 16 pt. Proves R-15, I-009, K-08. |
 | **T-18** | Resize the window across a diagram wider than the column: labels stay as sharp as body text at every width (no resampling blur); the diagram never exceeds its natural width when the column is wider. Proves R-11, I-005, K-07. |
-| **T-19** | A sequence diagram with `<br/>` in messages, notes, and participants, an `alt`/`else` block ending in a note, and `autonumber`: no label crosses a lifeline it does not span, no label overlaps an arrow or the block header, the note is inside the block, discs 1…*n* appear. Proves C-06.2, E-13. |
+| **T-19** | A sequence diagram with `<br/>` in messages, notes, and participants, an `alt`/`else` block ending in a note, and `autonumber`: no label crosses a lifeline it does not span, no label overlaps an arrow or the block header, the note is inside the block, discs 1…*n* appear; a 3-line label's row is 30 pt taller than a 1-line row. Proves C-06.2, E-13, K-08. |
 | **T-20** | A `stateDiagram-v2` with several `ID: line` descriptions and `classDef` colours: each state shows all its lines and its colours. Proves C-06.1 rule 4, C-06.2. |
 | **T-21** | Mermaid block controls: style menu switches and persists after relaunch; Show Source toggles; Export PNG writes a file whose pixel size is $2\times$ the natural point size; pinch zoom clamps at $4\times$ and $0.5\times$. Proves R-09, K-07. |
 
@@ -520,13 +520,13 @@ The repository has **no automated test target** (D-01). Every test below is a re
 | -- | ---- |
 | **T-22** | `test-docs/links.md`: sibling link navigates in-app and ⌘← returns; `#fragment` scrolls to the heading (and to a heading containing `$\pi$` via its GitHub slug); `https:` opens the browser; a broken local link does not navigate. Proves R-18, R-19, C-11, E-05, E-06. |
 | **T-23** | ⌘F "the": counter shows *n of m*, ⌘G/⇧⌘G cycle and scroll, matches in prose are highlighted per character, a match inside a code block tints the block; Esc closes. Click the sidebar, ⌘F: the global search field gets focus. Proves R-24, E-17, E-18. |
-| **T-24** | ⌘⇧F "auth": results include a file containing "authentication" (prefix match) with the term highlighted in the snippet; choosing it opens the file. Edit a file's content without changing mtime → old content still found; touch it → re-indexed on next open. Proves R-25, R-26, C-03. |
+| **T-24** | ⌘⇧F "auth": results include a file containing "authentication" (prefix match) with the term highlighted in the snippet; choosing it opens the file. Edit a file's content without changing mtime → old content still found; touch it → re-indexed on next open; a query for "résumé" matches "resume". Proves R-25, R-26, C-03, K-09. |
 | **T-25** | Open 101 distinct files: the sidebar shows the newest 100, most recent first, no duplicates; swipe-delete removes one; relaunch preserves the list. Proves R-20, I-013, K-03. |
-| **T-26** | ⌘D at a section, then edit the file to insert a paragraph above it: ⌘1 still lands on the section (fingerprint); delete the section entirely: ⌘1 lands at the clamped index. Delete the file: the bookmark row is marked missing and ⌘1 is a no-op. Proves R-27, C-08, E-08, E-09. |
+| **T-26** | ⌘D at a section, then edit the file to insert a paragraph above it: ⌘1 still lands on the section (fingerprint); delete the section entirely: ⌘1 lands at the clamped index. Delete the file: the bookmark row is marked missing and ⌘1 is a no-op. A bookmark whose heading exceeds 80 characters still resolves after an edit beyond the 80th character. Proves R-27, C-08, E-08, E-09, K-09. |
 | **T-27** | ⌘⇧0, scroll away, ⌘0 returns; relaunch: ⌘0 is disabled. Proves R-28. |
 | **T-28** | Scroll to the middle, quit, relaunch: same position. Then modify the file externally and relaunch: top of document. Proves R-06, C-08, E-08, K-06. |
 | **T-29** | With the file open, save it from an editor five times within 50 ms (script): one reload, scroll position kept, selection cleared. Proves R-05, K-06, E-19. |
-| **T-30** | Single-click a heading: the section flashes and the pasteboard holds its Markdown source ending at the next same-or-higher heading; double-click selects it; drag through two sections selects both whole; ⌘A + ⌘C yields the document joined by blank lines; Esc clears. Proves R-22, C-12. |
+| **T-30** | Single-click a heading: the section flashes and the pasteboard holds its Markdown source ending at the next same-or-higher heading; double-click selects it; drag through two sections selects both whole; ⌘A + ⌘C yields the document joined by blank lines; Esc clears. Throughout, the TOC row, find match, and bookmark for one paragraph all address the same block index. Proves R-22, C-12, I-004. |
 | **T-31** | Drag the inspector's left edge to 520 pt and 180 pt (clamps), relaunch: width kept; drag the sidebar divider: clamps at 180/400. Proves R-20, R-21, K-04. |
 
 ### 9.5 Robustness and resources (scripted)
@@ -534,7 +534,7 @@ The repository has **no automated test target** (D-01). Every test below is a re
 | ID | Test |
 | -- | ---- |
 | **T-32** | With `test-docs/math.md` open and the mouse still, `top` samples over 30 s show the process at $\leq 1\,\%$ CPU. Proves I-008. |
-| **T-33** | Corrupt `mdv.db` (truncate the file) and launch: the app opens, documents render, `NSLog` shows the `[mdv]` failure line; bookmarks and search are empty; no crash. Proves E-12, I-006. |
+| **T-33** | Corrupt `mdv.db` (truncate the file) and launch: the app opens, documents render, `NSLog` shows the `[mdv]` failure line; bookmarks and search are empty; no crash. Kill the app mid-⌘D (`kill -9` in a loop): on relaunch every bookmark row is either complete or absent. Proves E-12, I-006, I-007. |
 | **T-34** | `diff -r` between `Vendor/SwiftMath/Sources` and upstream v1.7.3 `Sources/SwiftMath` shows only the files and hunks listed in `Vendor/SwiftMath/README.md`. Proves I-011. |
 | **T-35** | Open a document while the same path is open in a second window, edit it on disk: both windows reload. Proves E-20. |
 | **T-36** | Grep the built binary's log output during T-05..T-31 (`log stream --process mdv`): no line contains document text, a query string, or a path other than in the `[mdv]` failure message. Proves R-35, I-003. |
