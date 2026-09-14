@@ -302,7 +302,8 @@ extension MathMarkdown {
         return out
     }
 
-    private static func latexToUnicode(_ latex: String) -> String {
+    /// Unicode approximation of one LaTeX expression (no delimiters).
+    static func latexToUnicode(_ latex: String) -> String {
         var s = latex
         // \frac{a}{b} → a/b, \sqrt{x} → √x, wrappers → contents
         s = s.replacingOccurrences(of: #"\\frac\{([^{}]*)\}\{([^{}]*)\}"#, with: "$1/$2", options: .regularExpression)

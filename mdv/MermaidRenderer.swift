@@ -1,5 +1,6 @@
 @preconcurrency import AppKit
 import BeautifulMermaid
+import SwiftMath
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -399,7 +400,7 @@ final class MDVMermaidImageCache {
                 theme: diagramTheme,
                 scale: scale
             ) else { return SendableMermaidImage(image: nil) }
-            return SendableMermaidImage(image: image.flippedVertically())
+            return SendableMermaidImage(image: image)
         }.value.image
     }
 }
@@ -409,16 +410,128 @@ final class MDVMermaidImageCache {
 // reaches the ELK layout engine. ELK enforces its invariants with `assert`,
 // which is uncatchable and takes the whole app down.
 enum MDVMermaidPipeline {
+    /// Returns the diagram upright (the library draws in a y-down context
+    /// and hands back an upside-down bitmap).
     static func renderImage(source: String, theme: DiagramTheme, scale: CGFloat) throws -> NSImage? {
-        let graph = try MermaidParser.parse(sanitize(source))
+        var graph = try MermaidParser.parse(sanitize(source))
+        var mathNodes: [String: NSImage] = [:]
         switch graph.typedPayload {
-        case .flowchart(let model), .stateDiagram(let model):
+        case .flowchart(var model), .stateDiagram(var model):
             normalizeSubgraphOwnership(model)
+            mathNodes = substituteMath(in: &model, theme: theme)
+            graph.payload = model
         default:
             break
         }
         let positioned = try GraphLayout().layout(graph)
-        return MermaidImageRenderer(theme: theme).renderImage(from: positioned, scale: scale)
+        guard let base = MermaidImageRenderer(theme: theme)
+            .renderImage(from: positioned, scale: scale)?
+            .flippedVertically() else { return nil }
+        guard !mathNodes.isEmpty, let nodes = positioned.flowchartNodes else { return base }
+        return composite(base, nodes: nodes, math: mathNodes, scale: scale)
+    }
+
+    // MARK: LaTeX in labels
+
+    /// Mermaid.js renders `$$…$$` inside node/edge labels with KaTeX;
+    /// BeautifulMermaid draws the dollars verbatim. A node whose label is
+    /// nothing but one math span gets typeset properly: the label is swapped
+    /// for a blank placeholder the layout measures to the same size, and the
+    /// math image is drawn over the node afterwards (`composite`). Math mixed
+    /// with text, and math in edge labels, falls back to the Unicode
+    /// approximation the TOC uses (`x²`, `≤`, `a/b`).
+    private static let mathLabelFontSize: CGFloat = 14
+
+    private static func substituteMath(in model: inout ParsedGraphModel, theme: DiagramTheme) -> [String: NSImage] {
+        var images: [String: NSImage] = [:]
+        for idx in model.nodesInOrder.indices {
+            let label = model.nodesInOrder[idx].node.label
+            guard label.contains("$$") else { continue }
+            if let latex = wholeMathSpan(label), let image = typeset(latex, color: theme.foreground) {
+                images[model.nodesInOrder[idx].id] = image
+                model.nodesInOrder[idx].node.label = placeholder(for: image.size)
+            } else {
+                model.nodesInOrder[idx].node.label = MathMarkdown.plainText(label)
+            }
+        }
+        for idx in model.edges.indices {
+            if let label = model.edges[idx].label, label.contains("$$") {
+                model.edges[idx].label = MathMarkdown.plainText(label)
+            }
+        }
+        return images
+    }
+
+    /// The LaTeX if `label` is exactly one `$$…$$` span (whitespace and
+    /// line breaks around it allowed), else nil.
+    private static func wholeMathSpan(_ label: String) -> String? {
+        let t = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.hasPrefix("$$"), t.hasSuffix("$$"), t.count > 4 else { return nil }
+        let inner = t.dropFirst(2).dropLast(2)
+        guard !inner.contains("$$") else { return nil }
+        let latex = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+        return latex.isEmpty ? nil : latex
+    }
+
+    private static func typeset(_ latex: String, color: NSColor) -> NSImage? {
+        MathSymbols.registerOnce()
+        var math = MathImage(
+            latex: MathSymbols.preprocess(latex),
+            fontSize: mathLabelFontSize,
+            textColor: color,
+            labelMode: .display,
+            textAlignment: .center
+        )
+        let (error, image, _) = math.asImage()
+        return error == nil ? image : nil
+    }
+
+    /// Blank text the library measures to at least `size`: spaces for width,
+    /// extra lines for height. Node padding is added by the layout as usual.
+    private static func placeholder(for size: CGSize) -> String {
+        let fontSize = original_src_styles.FONT_SIZES.nodeLabel
+        let weight = original_src_styles.FONT_WEIGHTS.nodeLabel
+        var line = " "
+        while original_src_text_metrics.measureMultilineText(line, fontSize: fontSize, fontWeight: weight).width < size.width,
+              line.count < 400 {
+            line.append(" ")
+        }
+        var text = line
+        while original_src_text_metrics.measureMultilineText(text, fontSize: fontSize, fontWeight: weight).height < size.height,
+              text.count < 4000 {
+            text += "\n" + line
+        }
+        return text
+    }
+
+    /// Draws each typeset math image centred on its node. `base` is upright;
+    /// node rects are in the library's y-down layout space, which maps 1:1
+    /// onto the image in points.
+    private static func composite(_ base: NSImage, nodes: [PositionedNode], math: [String: NSImage], scale: CGFloat) -> NSImage {
+        let size = base.size
+        guard let ctx = CGContext(
+            data: nil,
+            width: Int(size.width * scale), height: Int(size.height * scale),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return base }
+        ctx.scaleBy(x: scale, y: scale)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        base.draw(in: CGRect(origin: .zero, size: size))
+        for node in nodes {
+            guard let image = math[node.id] else { continue }
+            let w = image.size.width, h = image.size.height
+            let x = node.x + (node.width - w) / 2
+            let yTop = node.y + (node.height - h) / 2
+            image.draw(in: CGRect(x: x, y: size.height - yTop - h, width: w, height: h))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let cg = ctx.makeImage() else { return base }
+        return NSImage(cgImage: cg, size: size)
     }
 
     /// Two things Mermaid.js accepts that BeautifulMermaid's parser doesn't:

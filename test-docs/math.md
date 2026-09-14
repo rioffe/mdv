@@ -123,3 +123,15 @@ and a bogus command in display:
 $$
 \notacommand{x}
 $$
+
+## Inside Mermaid
+
+Node labels that are a single `$$…$$` span are typeset; text mixed with
+math, and edge labels, get the Unicode approximation.
+
+```mermaid
+flowchart LR
+    P["principal P"] --> OWED["$$P(1+r)^n$$"]
+    OWED -->|"solve for M, $$r \ne 0$$"| M["$$M = P \cdot \frac{r(1+r)^n}{(1+r)^n - 1}$$"]
+    M --> MIX["mixed: rate $$r$$ per period"]
+```

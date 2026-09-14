@@ -27,6 +27,14 @@ honour anyway — and inline HTML formatting tags in labels (`<b>`, `<i>`,
 types the library lacks (`timeline`, `gantt`, `pie`, `mindmap`, …) show the
 "could not be rendered" fallback with the source.
 
+**LaTeX in labels.** Mermaid.js renders `$$…$$` in labels with KaTeX. A
+node whose label is exactly one `$$` span is typeset with SwiftMath: the
+label is replaced by a blank placeholder that `measureMultilineText`
+sizes like the math image, ELK lays the node out at that size, and
+`composite` draws the image centred on the node rect afterwards (node
+coordinates map 1:1 onto the image in points). Math mixed with text, and
+math in edge labels, uses the Unicode approximation (`MathMarkdown.plainText`).
+
 **Still true:**
 - Other ELK `assert`s may exist for other malformed diagrams. `make` builds
   debug (asserts on); a release build strips them.
