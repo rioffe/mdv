@@ -99,6 +99,7 @@ Sources are cited as `[Help §…]`, `[README]`, `[NOTES]`, or a file path in `m
 | **R-33** | `bin/mdv` MUST implement the surface in §5.2: locate the app bundle per the documented search order, open files/directories by absolute path, read stdin into a temporary `.md` for `-`, print the bundle version for `--version`, and exit `1` with `mdv: no such file: <path>` on stderr for a missing argument. `[bin/mdv]` |
 | **R-34** | `make` (default) MUST build a runnable `build/mdv.app` from a clean checkout with only the Swift toolchain, copying every resource the app needs (C-13); `make install` MUST place it in `/Applications`, register it with LaunchServices, and symlink the CLI; `make dist` MUST refuse to run unless `HEAD` carries an exact `vX.Y.Z` tag. `[Makefile; build.sh]` |
 | **R-35** | The application MUST NOT print document content, file contents, or query strings to any log at any verbosity. The only diagnostics it emits are `NSLog` lines on persistence-store failures (E-12) and the font-registration lines SwiftMath prints once per font on first use. |
+| **R-37** | The repository MUST carry an automated test suite runnable with `swift test` from a clean checkout, covering at least the pure contracts (C-02 block split, C-03 query construction, C-07.1 delimiters and C-07.3 plain text, C-08 fingerprint/resolve, C-10 smart typography, C-11 slugs, C-12 sections) and the Mermaid/LaTeX sanitisers (C-06.1, C-07.2), and CI MUST run it on every push. *Not yet built* — see D-01 and §9.0. |
 | **R-36** | The application MUST NOT crash on any document: a repair layer failure MUST degrade to the fallback of R-10/R-14, and every path that reaches a third-party parser MUST be preceded by the sanitisation that keeps that parser inside its asserted invariants (E-01). `[NOTES §Mermaid: ELK layout asserts]` |
 
 ## 3. Behavior and state model
@@ -135,7 +136,7 @@ stateDiagram-v2
 Every visible block goes through the same path on each render (the split itself happens once per load, R-04):
 
 ```mermaid
-flowchart LR
+flowchart TD
     B["block source (C-02)"] --> F{"fenced code?"}
     F -->|"mermaid"| M["MDVMermaidPipeline (C-06)"]
     F -->|"other / none"| TS["CodeRenderer: tree-sitter (C-05)"]
@@ -476,7 +477,20 @@ CI (`.github/workflows/build.yml`): on every push to `main`, build `debug` and `
 
 ## 9. Acceptance criteria, tests, and evals
 
-The repository has **no automated test target** (D-01). Every test below is a reproducible manual or scripted check against `build/mdv.app` or the offscreen harness described in `NOTES.md` (a scratch SwiftPM package that links the same pipeline code and renders to PNG). "Renders" means: no fallback block, no crash report in `~/Library/Logs/DiagnosticReports/mdv-*.ips`.
+### 9.0 Status and target
+
+The repository currently has **no automated test target**; the product direction is that it MUST get one (R-37, D-01 confirmed). Until it lands, every test below is a reproducible manual or scripted check against `build/mdv.app` or the offscreen harness described in `NOTES.md` (a scratch SwiftPM package that links the same pipeline code and renders to PNG). "Renders" means: no fallback block, no crash report in `~/Library/Logs/DiagnosticReports/mdv-*.ips`.
+
+The intended shape of the suite, so that each manual test below has a home to move to:
+
+| Group | Target | What moves there | Runs |
+| ----- | ------ | ---------------- | ---- |
+| **Unit** (`Tests/mdvTests`) | pure functions: `ParsedDocument.parseBlocks/parseTOC`, `Database.makeFTSQuery`, `MathMarkdown.rewrite/plainText`, `MathSymbols.preprocess`, `MDVMermaidPipeline.sanitize/mergeStateDescriptions/normalizeColors`, `bookmarkFingerprint/resolveBookmarkAnchor`, `smartenMarkdown`, `headingSlug`, `sectionRange`, `CodeRenderer.SupportedLanguage.resolve` | T-07 (delimiter cases), T-10 (typography cases), T-14..T-16, T-20 (sanitiser output), T-22 (slugs), T-24 (query building), T-26 (anchors), T-30 (sections) | `swift test`, CI on every push |
+| **Render snapshot** (`Tests/mdvRenderTests`) | `MDVMermaidPipeline.prepare/rasterize`, `MathImageCache`, `CodeRenderer.render` against `test-docs/` and a checked-in diagram corpus; PNG/attributed-string goldens with a pixel tolerance | T-06, T-13, T-17 (ink measurement), T-18, T-19 | `swift test`, CI (macOS runner) |
+| **Persistence** (`Tests/mdvTests`, temp DB) | `Database` with `databaseURL` pointed at a temp dir: index, search, bookmarks, scroll positions, corrupt-file behaviour | T-24, T-28, T-33 | `swift test` |
+| **UI / manual** | menus, shortcuts, drag, live reload, zoom HUD, window behaviour | T-01..T-05, T-08, T-09, T-11, T-12, T-21, T-23, T-25, T-27, T-29, T-31, T-32, T-35, T-36 | by hand, or an XCUITest target later |
+
+Prerequisites for the unit group: `Database.databaseURL` becomes injectable; the pipeline functions marked `private` in `MDVMermaidPipeline`/`MathMarkdown` become `internal` (`@testable import mdv`) — an executable target can be imported with `@testable` only when built for testing, so the app code SHOULD move to a library target (`mdvCore`) with a thin executable, which is also what lets the render tests link the pipeline without the harness's copy-paste.
 
 ### 9.1 Build, bundle, launcher (scripted)
 
@@ -597,6 +611,7 @@ Environment variables: `MDV_APP` (launcher bundle override). Runtime files: `~/L
 | R-34 | `Makefile`, `build.sh` | T-01, T-02 |
 | R-35 | absence of logging; `Database` `NSLog` sites | T-36 |
 | R-36 | sanitisers + fallbacks | T-13 |
+| R-37 | *not yet realised* — target layout in §9.0 | CI running `swift test` (to be added) |
 | C-01 | `mdv/Info.plist`, `mdv.entitlements`, `build.sh` | T-01 |
 | C-02 | `ParsedDocument.parseBlocks/parseTOC` | T-07, T-30 |
 | C-03 | `Database.migrate/_indexFile/_search/makeFTSQuery` | T-24 |
@@ -656,7 +671,7 @@ Environment variables: `MDV_APP` (launcher bundle override). Runtime files: `~/L
 
 | ID | Decision | Default taken | Alternatives | Affects | Owner / status |
 | -- | -------- | ------------- | ------------ | ------- | -------------- |
-| D-01 | No automated test suite exists; §9 is manual/scripted. | Spec documents manual tests; the harness stays a scratch tool outside the repo. | Add a `mdvTests` target (unit tests for C-02, C-03 query building, C-07.1 delimiters, C-07.3, C-11, C-12 are pure functions and cheap to test); check the harness in under `tools/`. | §9, R-36 | maintainer / **confirm** |
+| D-01 | No automated test suite exists today; the product MUST have one. | R-37 added; §9.0 names the target groups and which manual tests migrate to each; the app SHOULD be split into `mdvCore` (library) + executable so tests can `@testable import` it. | Keep manual-only; or XCUITest-only. | R-37, §9, R-36 | owner / **confirmed v0.1** (2026-09-14) |
 | D-02 | Inline math with descenders sits `descent` points above the baseline (SwiftUI `Text(Image)` has no baseline hook through MarkdownUI). | Accepted as a known limitation; documented in `NOTES.md`. | Fork or vendor MarkdownUI to apply `.baselineOffset` in `TextInlineRenderer.renderImage` (one-line patch). | R-12 | maintainer / **confirm** |
 | D-03 | SwiftMath is vendored (not a package dependency) because of the resource-bundle/codesign conflict. | Vendored with four patches, one font. | Fork on GitHub and depend on the fork; ship more math fonts and expose a font choice. | C-07, I-011, K-12 | maintainer / **confirm** |
 | D-04 | Mermaid diagram types the library lacks (`timeline`, `gantt`, `pie`, `mindmap`, `gitGraph`, `journey`, `quadrantChart`) show the fallback. | Fallback only. | Implement the simpler ones (`pie`, `timeline`) in mdv on top of the library's renderer primitives; or switch library. | R-10, E-02 | maintainer / open |
@@ -673,4 +688,4 @@ Environment variables: `MDV_APP` (launcher bundle override). Runtime files: `~/L
 
 ---
 
-*Revision history — v0.1 (2026-09-14): first as-built draft, covering the tree at `a6feb14`.*
+*Revision history — v0.1 (2026-09-14): first as-built draft, covering the tree at `a6feb14`; §3.2 diagram made vertical; R-37 and §9.0 added after D-01 was confirmed (automated suite is a product requirement).*
