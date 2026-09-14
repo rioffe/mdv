@@ -62,6 +62,13 @@ parser's shape table (trapezoids are), so they hit the rectangle rule with
 the slashes and quotes left in the label. `sanitize` rewrites them to plain
 rectangles — shape lost, text clean.
 
+**Sequence diagrams.** The parser keeps `<br>` in labels and the renderer
+only breaks lines in notes. `resolveLineBreaks` turns them into newlines
+in notes, spaces in actor labels (fixed 40pt box), and for messages blanks
+the label and draws the lines itself in `rasterize`, stacked upward from
+the arrow; `expandRows` pushes the message and everything below it down
+`(lines − 1) × 13pt` (rows are otherwise a fixed 40pt) so nothing overlaps.
+
 **xychart.** The parser only knows `line [...]`; Mermaid's named form
 `line "interest" [...]` is rewritten to it in `sanitize`. Series names
 are lost — the library's legend is hardcoded "Line 1/2", and there is no

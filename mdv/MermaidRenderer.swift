@@ -418,13 +418,17 @@ final class MDVMermaidPrepared: @unchecked Sendable {
     let positioned: PositionedGraph
     let theme: DiagramTheme
     let math: [String: NSImage]
+    /// Sequence-diagram message labels that contained `<br>`, by message
+    /// index, drawn by `rasterize` since the library draws one line only.
+    let messageLines: [Int: [String]]
     /// Natural size in points.
     let size: CGSize
 
-    init(positioned: PositionedGraph, theme: DiagramTheme, math: [String: NSImage]) {
+    init(positioned: PositionedGraph, theme: DiagramTheme, math: [String: NSImage], messageLines: [Int: [String]] = [:]) {
         self.positioned = positioned
         self.theme = theme
         self.math = math
+        self.messageLines = messageLines
         self.size = CGSize(width: max(1, positioned.width), height: max(1, positioned.height))
     }
 }
@@ -486,16 +490,124 @@ enum MDVMermaidPipeline {
     static func prepare(source: String, theme: DiagramTheme) throws -> MDVMermaidPrepared {
         var graph = try MermaidParser.parse(sanitize(source))
         var mathNodes: [String: NSImage] = [:]
+        var messageLines: [Int: [String]] = [:]
         switch graph.typedPayload {
         case .flowchart(var model), .stateDiagram(var model):
             normalizeSubgraphOwnership(model)
             mathNodes = substituteMath(in: &model, theme: theme)
             graph.payload = model
+        case .sequenceDiagram(var seq):
+            messageLines = resolveLineBreaks(in: &seq)
+            graph.payload = seq
         default:
             break
         }
-        let positioned = try GraphLayout().layout(graph)
-        return MDVMermaidPrepared(positioned: positioned, theme: theme, math: mathNodes)
+        var positioned = try GraphLayout().layout(graph)
+        if !messageLines.isEmpty { expandRows(&positioned, for: messageLines) }
+        return MDVMermaidPrepared(positioned: positioned, theme: theme, math: mathNodes, messageLines: messageLines)
+    }
+
+    /// Line pitch of message labels drawn by `drawMessageLines`.
+    private static let messageLineHeight: Double = 13
+
+    /// The layout gives every message a fixed 40pt row. Open up the rows of
+    /// multi-line messages by pushing the message and everything below it
+    /// down `(lines − 1) × lineHeight`, and growing the blocks, lifelines
+    /// and diagram height that span it. Items above (previous arrow, block
+    /// header, divider) stay put, so the gap grows.
+    private static func expandRows(_ positioned: inout PositionedGraph, for messageLines: [Int: [String]]) {
+        guard case .sequenceDiagram(let actors, var messages, var blocks, var lifelines, var activations, var notes) = positioned.content else { return }
+        var total = 0.0
+        for index in messageLines.keys.sorted() {
+            guard messages.indices.contains(index), let lines = messageLines[index], lines.count > 1 else { continue }
+            let extra = Double(lines.count - 1) * messageLineHeight
+            let threshold = messages[index].y - 0.5
+            for i in messages.indices where messages[i].y >= threshold { messages[i].y += extra }
+            for i in notes.indices where notes[i].y >= threshold { notes[i].y += extra }
+            for i in activations.indices {
+                if activations[i].topY >= threshold { activations[i].topY += extra }
+                if activations[i].bottomY >= threshold { activations[i].bottomY += extra }
+            }
+            for i in lifelines.indices where lifelines[i].bottomY >= threshold { lifelines[i].bottomY += extra }
+            for i in blocks.indices {
+                if blocks[i].y >= threshold {
+                    blocks[i].y += extra
+                } else if blocks[i].y + blocks[i].height >= threshold {
+                    blocks[i].height += extra
+                }
+                for d in blocks[i].dividers.indices where blocks[i].dividers[d].y >= threshold {
+                    blocks[i].dividers[d].y += extra
+                }
+            }
+            total += extra
+        }
+        positioned.height += total
+        positioned.content = .sequenceDiagram(
+            actors: actors, messages: messages, blocks: blocks,
+            lifelines: lifelines, activations: activations, notes: notes
+        )
+    }
+
+    // MARK: Sequence diagrams: <br> in labels
+
+    /// The sequence parser normalises `<br/>` to `<br>` and leaves it in the
+    /// label; only notes get real line breaks from the renderer. Notes: make
+    /// them newlines. Actors: the box is a fixed 40pt, so join with a space
+    /// (its width follows the label). Messages: the library draws one line
+    /// centred on the arrow, so blank the label and keep the lines for
+    /// `rasterize` to stack above the arrow.
+    private static func resolveLineBreaks(in seq: inout SequenceDiagram) -> [Int: [String]] {
+        let br = #"<br\s*/?>"#
+        for i in seq.notes.indices {
+            seq.notes[i].text = seq.notes[i].text.replacingOccurrences(of: br, with: "\n", options: [.regularExpression, .caseInsensitive])
+        }
+        for i in seq.actors.indices {
+            seq.actors[i].label = seq.actors[i].label.replacingOccurrences(of: br, with: " ", options: [.regularExpression, .caseInsensitive])
+        }
+        var lines: [Int: [String]] = [:]
+        for i in seq.messages.indices {
+            let label = seq.messages[i].label
+            guard label.range(of: br, options: [.regularExpression, .caseInsensitive]) != nil else { continue }
+            lines[i] = label
+                .replacingOccurrences(of: br, with: "\n", options: [.regularExpression, .caseInsensitive])
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            seq.messages[i].label = ""
+        }
+        return lines
+    }
+
+    /// Mirrors the library's message-label placement (11pt edge-label font in
+    /// the muted colour; centred 8pt above a normal arrow, left of a self
+    /// loop) but stacks lines upward so none crosses the arrow.
+    private static func drawMessageLines(_ prepared: MDVMermaidPrepared, size: CGSize, fitX: CGFloat, fitY: CGFloat) {
+        guard case .sequenceDiagram(_, let messages, _, _, _, _) = prepared.positioned.content else { return }
+        let font = NSFont.systemFont(ofSize: 11 * fitX)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: prepared.theme.effectiveMuted()]
+        let lineHeight = messageLineHeight * fitY
+        for (index, lines) in prepared.messageLines {
+            guard messages.indices.contains(index) else { continue }
+            let msg = messages[index]
+            let sized = lines.map { NSAttributedString(string: $0, attributes: attributes) }
+            if msg.isSelf {
+                // Self loop: 28×20, label to its right, block centred on the loop.
+                let x = (msg.x1 + 28 + 4) * fitX
+                let centerY = size.height - (msg.y + 10) * fitY
+                var top = centerY + CGFloat(sized.count) * lineHeight / 2
+                for line in sized {
+                    line.draw(in: CGRect(x: x, y: top - lineHeight, width: line.size().width + 2, height: lineHeight))
+                    top -= lineHeight
+                }
+            } else {
+                let centerX = (msg.x1 + msg.x2) / 2 * fitX
+                var bottom = size.height - (msg.y - 2) * fitY   // lowest line sits just above the arrow
+                for line in sized.reversed() {
+                    let w = line.size().width + 2
+                    line.draw(in: CGRect(x: centerX - w / 2, y: bottom, width: w, height: lineHeight))
+                    bottom += lineHeight
+                }
+            }
+        }
     }
 
     /// Whole-point size a diagram is shown at when drawn `width` points
@@ -541,6 +653,13 @@ enum MDVMermaidPipeline {
             bounds: CGRect(origin: .zero, size: natural)
         )
         ctx.restoreGState()
+
+        if !prepared.messageLines.isEmpty {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+            drawMessageLines(prepared, size: size, fitX: fitX, fitY: fitY)
+            NSGraphicsContext.restoreGraphicsState()
+        }
 
         // Typeset math over its nodes (y-up, in display points).
         if !prepared.math.isEmpty, let nodes = prepared.positioned.flowchartNodes {
