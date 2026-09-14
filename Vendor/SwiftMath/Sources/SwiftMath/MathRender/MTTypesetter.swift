@@ -653,7 +653,7 @@ class MTTypesetter {
                     atom.type = .ordinary;
                     
                     let over = atom as! MTOverLine?
-                    let display = self.makeOverline(over)
+                    let display = (over is MTBoxed) ? self.makeBoxed(over) : self.makeOverline(over)
                     displayAtoms.append(display!)
                     currentPosition.x += display!.width;
                     // add super scripts || subscripts
@@ -1443,6 +1443,22 @@ class MTTypesetter {
         return overDisplay;
     }
     
+    /// mdv: `\boxed{…}` — inner list framed with a rule of fraction-rule
+    /// thickness and ~0.35em of padding on each side (amsmath's \fboxsep).
+    func makeBoxed(_ boxed:MTOverLine?) -> MTDisplay? {
+        let innerListDisplay = MTTypesetter.createLineForMathList(boxed!.innerList, font:font, style:style, cramped:false)
+        let display = MTBoxDisplay(withInner:innerListDisplay, position:currentPosition, range:boxed!.indexRange)
+        let rule = styleFont.mathTable!.fractionRuleThickness
+        let pad = styleFont.fontSize * 0.35
+        display.padding = pad
+        display.lineThickness = rule
+        display.ascent = innerListDisplay!.ascent + pad + rule
+        display.descent = innerListDisplay!.descent + pad + rule
+        display.width = innerListDisplay!.width + 2 * (pad + rule)
+        display.updateInnerPosition()
+        return display
+    }
+
     // MARK: - Accents
     
     func isSingleCharAccentee(_ accent:MTAccent?) -> Bool {

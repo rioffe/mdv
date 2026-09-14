@@ -432,7 +432,7 @@ public struct MTMathListBuilder {
                     }
                 } else if atom.type == .overline {
                     if let overline = atom as? MTOverLine {
-                        str += "\\overline"
+                        str += atom is MTBoxed ? "\\boxed" : "\\overline"
                         str += "{\(mathListToString(overline.innerList!))}"
                     }
                 } else if atom.type == .underline {
@@ -578,6 +578,11 @@ public struct MTMathListBuilder {
             let over = MTOverLine()
             over.innerList = self.buildInternal(true)
             return over
+        } else if command == "boxed" {
+            // mdv: \boxed{…}, 1 argument
+            let boxed = MTBoxed()
+            boxed.innerList = self.buildInternal(true)
+            return boxed
         } else if command == "underline" {
             // The underline command has 1 arguments
             let under = MTUnderLine()
@@ -827,6 +832,10 @@ public struct MTMathListBuilder {
             over.innerList = self.buildInternal(true)
             
             return over
+        } else if command == "boxed" {
+            let boxed = MTBoxed()
+            boxed.innerList = self.buildInternal(true)
+            return boxed
         } else if command == "underline" {
             let under = MTUnderLine()
             under.innerList = self.buildInternal(true)

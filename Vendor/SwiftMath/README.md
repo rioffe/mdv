@@ -20,6 +20,11 @@ Local changes vs upstream:
   (upstream: internal) so `mdv/MathRenderer.swift` can register symbols
   upstream lacks (`\gtrsim`, `\therefore`, `\iint`, …) via
   `MTMathAtomFactory.add(latexSymbol:value:)`.
+- `\boxed{…}` support (upstream has none): `MTBoxed` atom in
+  `MathRender/MTMathList.swift` (an `MTOverLine` subclass, so it shares the
+  `.overline` type and every existing switch), parsing in
+  `MTMathListBuilder.swift`, `MTBoxDisplay` in `MTMathListDisplay.swift`,
+  and `makeBoxed` in `MTTypesetter.swift`.
 - `mathFonts.bundle` is trimmed to Latin Modern Math (the only font mdv
   uses) plus its GUST license. Upstream ships eleven more; copy them in
   from upstream if you ever want to offer a math font choice.

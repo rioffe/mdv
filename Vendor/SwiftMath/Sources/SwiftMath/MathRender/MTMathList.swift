@@ -232,6 +232,7 @@ public class MTMathAtom: NSObject {
             case .underline:
                 return MTUnderLine(self as? MTUnderLine)
             case .overline:
+                if let boxed = self as? MTBoxed { return MTBoxed(boxed) }
                 return MTOverLine(self as? MTOverLine)
             case .accent:
                 return MTAccent(self as? MTAccent)
@@ -531,6 +532,26 @@ public class MTOverLine: MTMathAtom {
     override init() {
         super.init()
         self.type = .overline
+    }
+}
+
+// MARK: - MTBoxed (mdv addition)
+/** `\boxed{…}`: a frame around the contained math list. Shares the
+ `.overline` atom type so spacing, copying and finalizing treat it as an
+ ordinary boxed unit; the typesetter checks the class to draw a box. */
+public class MTBoxed: MTOverLine {
+    override public var finalized: MTMathAtom {
+        let boxed = MTBoxed(self)
+        boxed.innerList = boxed.innerList?.finalized
+        return boxed
+    }
+
+    override init(_ over: MTOverLine?) {
+        super.init(over)
+    }
+
+    override init() {
+        super.init()
     }
 }
 

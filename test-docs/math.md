@@ -98,7 +98,11 @@ $$
 \end{align*}
 $$
 
-Still unsupported (shows the source): $\boxed{x}$, $\underbrace{a+b}_{c}$,
+Boxed: $\boxed{x}$, $\boxed{E = mc^2}$, and in display:
+
+$$\boxed{M = P \cdot \frac{r(1+r)^n}{(1+r)^n - 1}}$$
+
+Still unsupported (shows the source): $\underbrace{a+b}_{c}$,
 $\stackrel{?}{=}$, $\substack{a \\ b}$, `\&`.
 
 ## Things that must NOT become math

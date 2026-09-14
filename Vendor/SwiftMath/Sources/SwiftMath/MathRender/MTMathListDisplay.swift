@@ -772,6 +772,65 @@ class MTLineDisplay : MTDisplay {
     
 }
 
+// MARK: - MTBoxDisplay (mdv addition)
+
+/// `\boxed{…}`: the inner list with a rectangular frame around it.
+class MTBoxDisplay : MTDisplay {
+    var inner:MTMathListDisplay?
+    /// Gap between the frame and the inner list, and the frame's stroke width.
+    var padding:CGFloat=0
+    var lineThickness:CGFloat=0
+
+    init(withInner inner:MTMathListDisplay?, position:CGPoint, range:NSRange) {
+        super.init()
+        self.inner = inner
+        self.position = position
+        self.range = range
+    }
+
+    override var textColor: MTColor? {
+        set {
+            super.textColor = newValue
+            inner?.textColor = newValue
+        }
+        get { super.textColor }
+    }
+
+    override var position: CGPoint {
+        set {
+            super.position = newValue
+            self.updateInnerPosition()
+        }
+        get { super.position }
+    }
+
+    override func draw(_ context:CGContext) {
+        super.draw(context)
+        self.inner?.draw(context)
+
+        context.saveGState()
+        self.textColor?.setStroke()
+        let inset = self.lineThickness / 2
+        let rect = CGRectMake(
+            self.position.x + inset,
+            self.position.y - self.descent + inset,
+            self.width - self.lineThickness,
+            self.ascent + self.descent - self.lineThickness
+        )
+        let path = MTBezierPath(rect: rect)
+        path.lineWidth = self.lineThickness
+        path.stroke()
+        context.restoreGState()
+    }
+
+    func updateInnerPosition() {
+        self.inner?.position = CGPointMake(
+            self.position.x + self.padding + self.lineThickness,
+            self.position.y
+        )
+    }
+}
+
 // MARK: - MTAccentDisplay
 
 /// Rendering an accent as a display
