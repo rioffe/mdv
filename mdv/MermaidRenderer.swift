@@ -421,14 +421,17 @@ final class MDVMermaidPrepared: @unchecked Sendable {
     /// Sequence-diagram message labels that contained `<br>`, by message
     /// index, drawn by `rasterize` since the library draws one line only.
     let messageLines: [Int: [String]]
+    /// `autonumber` was set: draw a numbered badge at each message's tail.
+    let autonumber: Bool
     /// Natural size in points.
     let size: CGSize
 
-    init(positioned: PositionedGraph, theme: DiagramTheme, math: [String: NSImage], messageLines: [Int: [String]] = [:]) {
+    init(positioned: PositionedGraph, theme: DiagramTheme, math: [String: NSImage], messageLines: [Int: [String]] = [:], autonumber: Bool = false) {
         self.positioned = positioned
         self.theme = theme
         self.math = math
         self.messageLines = messageLines
+        self.autonumber = autonumber
         self.size = CGSize(width: max(1, positioned.width), height: max(1, positioned.height))
     }
 }
@@ -503,8 +506,107 @@ enum MDVMermaidPipeline {
             break
         }
         var positioned = try GraphLayout().layout(graph)
-        if !messageLines.isEmpty { expandRows(&positioned, for: messageLines) }
-        return MDVMermaidPrepared(positioned: positioned, theme: theme, math: mathNodes, messageLines: messageLines)
+        var autonumber = false
+        if graph.type == .sequenceDiagram {
+            widenActorGaps(&positioned, messageLines: messageLines)
+            expandRows(&positioned, for: messageLines)
+            fitBlocksAroundNotes(&positioned)
+            autonumber = source.range(of: #"(?m)^\s*autonumber\b"#, options: .regularExpression) != nil
+        }
+        return MDVMermaidPrepared(positioned: positioned, theme: theme, math: mathNodes, messageLines: messageLines, autonumber: autonumber)
+    }
+
+    /// The layout spaces actors by their box widths only, so a long message
+    /// label runs straight through the neighbouring lifelines (Mermaid.js
+    /// widens the gap to fit). Grow each gap until every message's label
+    /// fits between its endpoints, then remap every x in the diagram through
+    /// the old→new actor centres (piecewise linear, so block edges and note
+    /// boxes anchored between actors move with them).
+    private static func widenActorGaps(_ positioned: inout PositionedGraph, messageLines: [Int: [String]]) {
+        guard case .sequenceDiagram(var actors, var messages, var blocks, var lifelines, var activations, var notes) = positioned.content,
+              actors.count > 1 else { return }
+        let font = NSFont.systemFont(ofSize: 11)
+        func width(_ text: String) -> Double { (text as NSString).size(withAttributes: [.font: font]).width }
+        let index = Dictionary(actors.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let oldX = actors.map(\.x)
+        var gaps = (1..<actors.count).map { oldX[$0] - oldX[$0 - 1] }
+
+        for (i, msg) in messages.enumerated() {
+            guard let a = index[msg.from], let b = index[msg.to] else { continue }
+            let lines = messageLines[i] ?? [msg.label]
+            let needed = (lines.map(width).max() ?? 0) + 24
+            if a == b {
+                // Self message: label sits to the right of the loop, before the next lifeline.
+                guard a + 1 < actors.count else { continue }
+                let have = gaps[a] - actors[a + 1].width / 2
+                if have < needed + 36 { gaps[a] += needed + 36 - have }
+            } else {
+                let lo = min(a, b), hi = max(a, b)
+                let span = (lo..<hi).reduce(0.0) { $0 + gaps[$1] }
+                if span < needed { gaps[hi - 1] += needed - span }
+            }
+        }
+
+        var newX = [oldX[0]]
+        for g in gaps { newX.append(newX[newX.count - 1] + g) }
+        guard newX != oldX else { return }
+
+        func remap(_ x: Double) -> Double {
+            if x <= oldX[0] { return x + (newX[0] - oldX[0]) }
+            for k in 1..<oldX.count where x <= oldX[k] {
+                let t = (x - oldX[k - 1]) / max(oldX[k] - oldX[k - 1], 0.001)
+                return newX[k - 1] + t * (newX[k] - newX[k - 1])
+            }
+            return x + (newX[newX.count - 1] - oldX[oldX.count - 1])
+        }
+
+        for i in actors.indices { actors[i].x = newX[i] }
+        for i in lifelines.indices { lifelines[i].x = remap(lifelines[i].x) }
+        for i in activations.indices { activations[i].x = remap(activations[i].x + activations[i].width / 2) - activations[i].width / 2 }
+        for i in messages.indices {
+            messages[i].x1 = remap(messages[i].x1)
+            messages[i].x2 = remap(messages[i].x2)
+        }
+        for i in notes.indices {
+            // Keep the box size; move its anchor (centre for "over", the near edge otherwise).
+            switch notes[i].position {
+            case "left":  notes[i].x = remap(notes[i].x + notes[i].width) - notes[i].width
+            case "right": notes[i].x = remap(notes[i].x)
+            default:      notes[i].x = remap(notes[i].x + notes[i].width / 2) - notes[i].width / 2
+            }
+        }
+        for i in blocks.indices {
+            let left = remap(blocks[i].x), right = remap(blocks[i].x + blocks[i].width)
+            blocks[i].x = left
+            blocks[i].width = right - left
+        }
+        positioned.width += newX[newX.count - 1] - oldX[oldX.count - 1]
+        positioned.content = .sequenceDiagram(
+            actors: actors, messages: messages, blocks: blocks,
+            lifelines: lifelines, activations: activations, notes: notes
+        )
+    }
+
+    /// A note placed after the last message of a block is laid out below
+    /// the block's bottom edge (the layout ends blocks at the last message).
+    /// Extend such blocks to enclose the note.
+    private static func fitBlocksAroundNotes(_ positioned: inout PositionedGraph) {
+        guard case .sequenceDiagram(let actors, let messages, var blocks, let lifelines, let activations, let notes) = positioned.content,
+              !notes.isEmpty else { return }
+        for i in blocks.indices {
+            let bottom = blocks[i].y + blocks[i].height
+            for note in notes {
+                let noteBottom = note.y + note.height
+                let overlapsX = note.x < blocks[i].x + blocks[i].width && note.x + note.width > blocks[i].x
+                if overlapsX, note.y > blocks[i].y, note.y < bottom, noteBottom + 8 > bottom {
+                    blocks[i].height = noteBottom + 8 - blocks[i].y
+                }
+            }
+        }
+        positioned.content = .sequenceDiagram(
+            actors: actors, messages: messages, blocks: blocks,
+            lifelines: lifelines, activations: activations, notes: notes
+        )
     }
 
     /// Line pitch of message labels drawn by `drawMessageLines`.
@@ -520,7 +622,7 @@ enum MDVMermaidPipeline {
         var total = 0.0
         for index in messageLines.keys.sorted() {
             guard messages.indices.contains(index), let lines = messageLines[index], lines.count > 1 else { continue }
-            let extra = Double(lines.count - 1) * messageLineHeight
+            let extra = Double(lines.count - 1) * messageLineHeight + 4
             let threshold = messages[index].y - 0.5
             for i in messages.indices where messages[i].y >= threshold { messages[i].y += extra }
             for i in notes.indices where notes[i].y >= threshold { notes[i].y += extra }
@@ -575,6 +677,24 @@ enum MDVMermaidPipeline {
             seq.messages[i].label = ""
         }
         return lines
+    }
+
+    /// Mermaid's `autonumber`: a filled disc with the 1-based message
+    /// number on the tail of each arrow. The library ignores the keyword.
+    private static func drawAutonumbers(_ prepared: MDVMermaidPrepared, size: CGSize, fitX: CGFloat, fitY: CGFloat, in ctx: CGContext) {
+        guard case .sequenceDiagram(_, let messages, _, _, _, _) = prepared.positioned.content else { return }
+        let radius = 8 * fitX
+        let font = NSFont.systemFont(ofSize: 9 * fitX, weight: .semibold)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: prepared.theme.background]
+        for (i, msg) in messages.enumerated() {
+            let cx = msg.x1 * fitX
+            let cy = size.height - msg.y * fitY
+            ctx.setFillColor(prepared.theme.foreground.cgColor)
+            ctx.fillEllipse(in: CGRect(x: cx - radius, y: cy - radius, width: 2 * radius, height: 2 * radius))
+            let text = NSAttributedString(string: "\(i + 1)", attributes: attributes)
+            let w = text.size().width, h = text.size().height
+            text.draw(in: CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h))
+        }
     }
 
     /// Mirrors the library's message-label placement (11pt edge-label font in
@@ -654,10 +774,11 @@ enum MDVMermaidPipeline {
         )
         ctx.restoreGState()
 
-        if !prepared.messageLines.isEmpty {
+        if !prepared.messageLines.isEmpty || prepared.autonumber {
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
             drawMessageLines(prepared, size: size, fitX: fitX, fitY: fitY)
+            if prepared.autonumber { drawAutonumbers(prepared, size: size, fitX: fitX, fitY: fitY, in: ctx) }
             NSGraphicsContext.restoreGraphicsState()
         }
 

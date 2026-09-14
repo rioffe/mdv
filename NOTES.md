@@ -68,6 +68,12 @@ in notes, spaces in actor labels (fixed 40pt box), and for messages blanks
 the label and draws the lines itself in `rasterize`, stacked upward from
 the arrow; `expandRows` pushes the message and everything below it down
 `(lines − 1) × 13pt` (rows are otherwise a fixed 40pt) so nothing overlaps.
+`widenActorGaps` grows the gap between actors until every message label
+fits between its endpoints (the layout spaces actors by box width only, so
+labels ran through lifelines) and remaps every x through the old→new
+actor centres; `fitBlocksAroundNotes` extends a block whose last item is
+a note; `autonumber` badges are drawn by `drawAutonumbers` (the library
+ignores the keyword). Not done: mirrored actors at the bottom.
 
 **xychart.** The parser only knows `line [...]`; Mermaid's named form
 `line "interest" [...]` is rewritten to it in `sanitize`. Series names
