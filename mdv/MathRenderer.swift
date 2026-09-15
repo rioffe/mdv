@@ -591,7 +591,7 @@ private struct SendableRendered: @unchecked Sendable {
 struct MathInlineImageProvider: InlineImageProvider {
     func image(with url: URL, label: String) async throws -> Image {
         guard let spec = MathSpec(url: url) else {
-            return try await DefaultInlineImageProvider().image(with: url, label: label)
+            return try await DefaultInlineImageProvider.default.image(with: url, label: label)
         }
         let rendered = await MathImageCache.shared.rendered(for: spec)
         return Image(nsImage: rendered.image)

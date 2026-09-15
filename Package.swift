@@ -26,6 +26,7 @@ let package = Package(
                 "AppIcon.icns",
                 "Fonts",
                 "Grammars",
+                "Help.md",
             ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
