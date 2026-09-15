@@ -1,422 +1,407 @@
 # Specification Review Report
 
-> - **Subject:** `SPEC.md` v0.4 — mdv (Markdown viewer, native macOS GUI + CLI launcher)
-> - **Reviewed at:** commit `fb5794b`, 2026-09-14 — third pass, after F-001..F-041 were applied and F-033/F-034 were fixed in the code (`f3c94de`)
-> - **Method:** four passes per the `spec-review` skill. As in the second pass, every precise behavioural claim that had not yet been checked was verified against the cited implementation; two of the checks were run as small Swift scripts (`stripInlineMarkdown`, `headingSlug`). Finding ids continue from F-042; F-001..F-041 are listed as resolved in §3 and not re-argued.
+> - **Subject:** `SPEC.md` v0.5 — mdv (Markdown viewer, native macOS GUI + CLI launcher)
+> - **Reviewed at:** commit `a255106` (HEAD of `main`), 2026-09-14 — fourth pass, after F-001..F-061 were applied. The spec's front matter still names `fb5794b`; the one code commit since (`112fcaf`) is behaviour-neutral (see F-075).
+> - **Method:** four passes per the `spec-review` skill. As in the previous passes, every precise behavioural claim not yet checked was verified against the cited implementation by reading the code; nothing was run. Surfaces swept this time: file loading (`loadFile`, `loadDirectory`, `loadCurrentEntry`), the history manager and FTS index lifecycle, the sidebar/search-hit/back-stack selection paths, the placeholder, zoom and the code renderer, the Mermaid sanitiser and document theme, the math URL contract, the launcher script, the Makefile and CI. Finding ids continue from F-062; F-001..F-061 are listed as resolved in §3 and not re-argued.
 
 ## 1. Executive Summary
 
-v0.4 closed the second pass cleanly: R-22 now describes the as-built heading-click model, the *open defect* convention exists in §11 and was used and then retired correctly, and the F-033/F-034 fix in `f3c94de` matches the rule the spec asked for (a failed read keeps the page; an empty read is re-checked after 0.5 s). The renderer, persistence, packaging and launcher surfaces are implementation-grade.
+v0.5 closed the third pass as intended: R-40 and the §3.1 entries now describe the real first screen, the five *open defect* markers (F-042, F-045, F-048, F-051, F-052) are in §11 with a stated fix each, and the MEDIUM rules of the third pass (bookmark title, "TOC heading block", find count-vs-highlight, snapshot policy, delete-current-row, multi-URL open) read as the code behaves. The renderer contracts (§4), the §7.1 metric, the launcher (§5.2), the build chain (§5.3, C-13) and CI were re-verified line by line and hold.
 
-This pass swept the surfaces the first two did not verify line-by-line — window management, launch, menus, the find-bar internals, bookmark titles, the inline-Markdown stripper, the DB migration, the help file — and found the same class of defect as before, **the spec asserts behaviour the tree does not have**, in two places that matter and eleven that are smaller:
+This pass swept the last surface that had not been read against the code — **how a document gets loaded and how history and the index follow it** — and found the same class of defect as the earlier passes, in two places that matter and five that are smaller:
 
-1. **Every command and every open event is broadcast to every window.** Menu items post `NotificationCenter` notifications; every `ContentView` subscribes with no key-window check (`mdv/ContentView.swift:3124-3162`), and `application(_:open:)` does the same (`mdv/mdvApp.swift:188-199`). With a second window open (⌘⇧O), `open -a mdv x.md` loads `x.md` into both windows, ⌘O raises two open panels in sequence, ⌘D creates two bookmarks and ⌘← walks both back-stacks. R-01's "into the active window's content view" and R-18's "per-window" stacks are not as built.
-2. **A no-argument launch reopens the most recent history entry**, not the empty drop target (`mdv/ContentView.swift:525-530`). §3.1 says launch with no file enters `EMPTY`; no requirement states the restore; T-28 ("quit, relaunch: same position") depends on it without saying so. An implementer following the spec builds a different first screen.
+1. **An unreadable-as-UTF-8 file is not refused.** `loadFile` guards only existence and permission; the UTF-8 decode happens later in `loadCurrentEntry`, whose failure branch sets `rawMarkdown = ""`. Result: the history row is added and selected, the watcher is armed, the index skips the file silently, and the window shows the "No file open" drop target — not the previous document. R-04, E-03, §3.1, D-16 and T-39 all say the opposite, and §11 lists E-03 as verified. The same branch is reached when a sidebar row, ⌘← or ⌘0 targets a file deleted since, and by any genuinely empty file.
+2. **Three open routes do not add a history row.** Selecting a sidebar row, choosing a search hit already in history, and ⌘←/⌘→ assign `selectedEntry` directly, so the row is not moved to the top and the file is not re-indexed; §3.1 `LOADING` says every entry adds a row and indexes, R-20 says "most recent first", and T-24's "re-indexed on next open" only holds for the routes that go through `history.add`. ⌘← can also display an entry that was swipe-deleted, with no sidebar row.
 
-The MEDIUM findings are precision items an implementer would otherwise guess: which block is a "heading block" (R-22), which in-document jumps push a back-snapshot (R-18), what happens when the displayed history row is swipe-deleted (§3.1), how find counts versus how it highlights (R-24), the bookmark title fallback (R-27, wrong constants), `_emphasis_` stripping (C-12, implementation bug), C-14's "never modally" (two modal alerts exist), the DB migration "same transaction" claim (no transaction), and a slug rule that diverges from GitHub on `a - b` (C-11).
+The MEDIUM findings are rules an implementer would otherwise guess: the FTS index keeps files evicted by the 100-entry cap (R-26's "exactly the current history" is false after the 101st file); fenced code blocks do not zoom (R-30 is silent, T-11 implies they do); "shell language" for *Copy Without Prompts* is an undocumented six-name set; K-13's column-width formula applies the 860 pt cap before subtracting the padding, not after; and a mid-line `$$…$$` is emitted with the `display/` host and typeset in display style, where C-07.1 says `inline/`.
 
-- **Maturity:** Level 2 — the same one-fix-away position as v0.2, with a different pair of fixes.
+- **Maturity:** Level 2 — the same one-fix-away position as v0.4, on a different surface.
 - **Readiness:** READY WITH MINOR FIXES.
-- **Findings this pass:** 0 CRITICAL · 2 HIGH · 11 MEDIUM · 7 LOW (20). Cumulative: 61, of which 41 resolved.
-- **Strengths:** §4 contracts, §7.1 metric, the *open defect* convention, a §11 that now names symbols that exist; the F-034 fix is exactly the rule D-18 chose.
-- **Weaknesses:** window/launch behaviour is specified from the single-window mental model the code comments admit to ("Single-window app, so a global `@AppStorage` matches"); the find bar and bookmark-title rules were written from intent rather than from the code.
+- **Findings this pass:** 0 CRITICAL · 2 HIGH · 5 MEDIUM · 7 LOW (14). Cumulative: 75, of which 61 resolved.
+- **Strengths:** §4 contracts and §5.2/§5.3 match the tree exactly; the *open defect* convention is used consistently; the §3.1 table is now the right shape and only needs its `LOADING` row split.
+- **Weaknesses:** the loading path was specified from the E-03 intent ("unreadable → abort") rather than from `loadFile`/`loadCurrentEntry`; "opened" is used in R-20/R-26/§3.1 for two different things (adding a row vs. selecting one).
 
 ## 2. Overall Maturity
 
-**Level 2 — Implementable.** The document stays at Level 2 because a coding agent would build a materially different first screen (F-043) and a different multi-window behaviour (F-042) from the one shipped, and because eleven MEDIUM rules would be guessed differently by two implementers. Each is a sentence or a status marker away; with F-042/F-043 resolved and the MEDIUM rules pinned to the as-built behaviour, the document meets the Level 3 bar.
+**Level 2 — Implementable.** A coding agent building from v0.5 would refuse a Latin-1 file (spec) where the app shows an empty window with a new history row (code), and would move a sidebar-selected file to the top of history and re-index it (spec) where the app leaves both alone (code). Both are common paths a verifier hits in the first hour (T-24, T-25, T-39). Each is a sentence plus a status marker away; with F-062/F-063 resolved and the five MEDIUM rules pinned, the document meets the Level 3 bar. Nothing found this pass touches the renderer, persistence schema, or packaging.
 
 ## 3. Findings Summary
 
 ### Resolved from earlier passes
 
-F-001..F-041 — all applied (see `SPEC.md` revision history). Spot-checked this pass: F-032 (R-22 matches `isHeadingBlock`/`copySection`/`BlockTextSelection`; the 0.6 s flash and `NSCursor.pointingHand` are real), F-033 (`parseBlocks` normalises `\r\n` and `\r` before splitting, `mdv/ContentView.swift:2878-2881`), F-034 (a failed read returns without touching `rawMarkdown`; an empty read is re-checked after `transientReadWindow` = 0.5 s, `mdv/ContentView.swift:2752-2776`), F-036 (front-matter definition and §11 statuses present), F-038 (K-13 names the 8 pt handles), F-041 (rule citations by name).
+F-001..F-061 — all applied (see `SPEC.md` revision history). Spot-checked this pass: F-043 (R-40 and the `EMPTY`/`LOADING` entries match `ContentView.onAppear`, `mdv/ContentView.swift:522-532`), F-044 (`bookmarkTitle` 40/60/`(line n)`), F-049/F-050 (`pushSameDocSnapshot` callers; `delete(_:)` selects `history.entries.first`, `mdv/ContentView.swift:953-959`), F-053 (`application(_:open:)` posts one notification per URL in order; `handleDrop` takes `providers.first`), F-055 (Back/Forward never disabled; `jumpToPlaceholder` beeps), F-057 (`kFSEventStreamCreateFlagNoDefer`, latency `0.05`), F-058 (`HelpManager` overwrites), F-060 (`localizedCaseInsensitiveCompare`, `skipsHiddenFiles`, `isReadableFile`).
 
-### New in v0.4
+### New in v0.5
 
 | ID | Severity | Location | Title |
 | -- | -------- | -------- | ----- |
-| F-042 | HIGH | R-01, R-18, §5.1, E-20, §3.1 | Every command and open event is delivered to every window |
-| F-043 | HIGH | §3.1 `EMPTY`, R-01, R-06, T-28 | No-argument launch reopens the most recent history entry; the spec says `EMPTY` |
-| F-044 | MEDIUM | R-27 | Bookmark-title fallback is the first line stripped to 60 characters, `(line n)` when blank |
-| F-045 | MEDIUM | C-12, R-21, R-27 (implementation) | `stripInlineMarkdown` removes only the opening `_` of `_emphasis_` |
-| F-046 | MEDIUM | C-14, §5.1, R-23 | "Never modally" is false: CLI installer and editor-failure raise `NSAlert` |
-| F-047 | MEDIUM | R-24, E-17 | Find counts occurrences on block source but highlights on rendered inline text; the current occurrence is not distinguished within a block |
-| F-048 | MEDIUM | R-24, E-17 | Inline-highlight versus tint is decided by exclusion in the code, by inclusion in the spec |
-| F-049 | MEDIUM | R-18, R-21, R-27, R-28 | Which in-document jumps push a back-snapshot is unspecified (TOC row: yes; bookmark, placeholder, find: no) |
-| F-050 | MEDIUM | §3.1, R-20, R-26 | Swipe-deleting the displayed row switches document or empties the window; "history cleared" has no UI |
-| F-051 | MEDIUM | §3.3 | `migrate()` does not run in a transaction |
-| F-052 | MEDIUM | C-11, I-010, R-19 | Slug: whitespace adjacent to a hyphen yields no hyphen; `a - b` and `C++ & Rust` differ from GitHub |
-| F-053 | MEDIUM | R-01, R-03, §5.2 | Several files in one open event, or several items in one drop: which is shown is unspecified |
-| F-054 | MEDIUM | R-22, C-02 | "Heading block" is undefined; as built it means a `tocHeadings` block (h1–h3 single-line ATX) |
-| F-055 | LOW | §5.1, E-09, T-26 | Back/Forward and Jump to Placeholder are never disabled; empty jumps beep, not no-op |
-| F-056 | LOW | R-35, T-36 | Diagnostics list omits the font-registration and editor-failure `NSLog` lines |
-| F-057 | LOW | R-05, E-21, T-29, K-06 | FSEvents `NoDefer` makes a burst up to two reloads, not one; the transient rule as built defers every empty read |
-| F-058 | LOW | §3.3, R-31 | `Help.md` is rewritten on every ⌘?, so its scroll position is never restored |
-| F-059 | LOW | front matter, §10, C-01, §1, §5.3 | Dependency, extension, and provenance details drifted from the tree |
-| F-060 | LOW | R-02, R-26 | Directory ordering collation and filters; siblings are indexed although never "opened" |
-| F-061 | LOW | §4, §12, §3.3, revision history | Editorial: C-15 before C-13, D-18 before D-17, v0.4 above v0.3, Unicode `≤` in a table row |
+| F-062 | HIGH | R-04, E-03, §3.1, D-16, T-39, §11 | A file that exists but is not UTF-8 (or vanishes before the read) gets a history row and an empty window, not an aborted load |
+| F-063 | HIGH | §3.1 `LOADING`, R-01, R-20, R-26, R-18, T-24, T-25 | Sidebar row, search hit and ⌘←/⌘→ select an entry without adding a history row or re-indexing |
+| F-064 | MEDIUM | R-26, I-013, K-03, T-25 | Files evicted by the 100-entry cap stay in the full-text index |
+| F-065 | MEDIUM | R-30, C-05, T-11 | Fenced code blocks do not scale with ⌘=/⌘-; the spec is silent |
+| F-066 | MEDIUM | R-08 | "Shell language" for *Copy Without Prompts* is undefined; as built it is `bash sh zsh fish shell console` on the raw fence word |
+| F-067 | MEDIUM | K-13, R-11, T-18 | Column width: `articleMaxWidth` caps the padded frame, so the content width is $860 - 2 \cdot 40 - 2 \cdot 6$ pt, not 860 |
+| F-068 | MEDIUM | C-07.1, K-08, E-16 | A mid-line `$$…$$` is emitted with the `display/` host and typeset in `.display` mode; C-07.1 says `inline/` |
+| F-069 | LOW | R-06, R-26, C-08 | Swipe-deleting a history row also deletes the path's scroll position |
+| F-070 | LOW | C-04, R-29, R-30, K-06 | Stored-value edge cases: zoom is snapped to one decimal on step, an unknown theme id resolves to `high-contrast` but stays selected, index mtime compares whole seconds |
+| F-071 | LOW | R-24, R-05 | Find state across a live reload is recomputed and the current occurrence resets to the first; the query is matched untrimmed |
+| F-072 | LOW | §5.3, §10, §1 | Release-engineer inputs (`CERT_NAME`, `TEAM_ID`, `NOTARY_PROFILE`, `NOTES_FILE`, `VERSION`) are not in the spec |
+| F-073 | LOW | §5.2, R-33 | `mdv -` only as the sole argument; the first missing argument stops the loop; `--help`/`--version` still need a located bundle |
+| F-074 | LOW | R-28, R-18, E-09 | ⌘0 or ⌘← to a file that no longer exists: silent no-op (⌘0) or empty window (⌘←), where a bookmark beeps |
+| F-075 | LOW | front matter, §3.3, §11, C-06.1, C-07.2, C-12 | Editorial: stale as-built commit, "clear" in §3.3, `initialURL` citation, unstarred `\operatorname`, "next heading" in C-12, colour-name prefix rule |
 
 ## 4. Detailed Findings
 
-### F-042 — Every command and open event is delivered to every window
+### F-062 — A file that exists but is not UTF-8 (or vanishes before the read) gets a history row and an empty window
 
 **Severity:** HIGH
 
-**Location:** R-01 ("All routes MUST load the file into the active window's content view"); R-18 ("per-window back/forward stacks"); §5.1 (every row); E-20; §3.1 ("A window holds at most one current document")
+**Location:** R-04 ("a file that is not valid UTF-8 is unreadable (E-03, D-16)"); E-03 ("Load aborted; window keeps its previous document; no history entry added"); §3.1 `LOADING` ("unreadable file → the previous state … no history change"); D-16; T-39 ("does not open and the window keeps its previous document"); §11 rows E-03 and R-04 (plain, i.e. verified)
 
 **Observation**
 
-Menu items in `mdvApp.swift` post process-wide notifications (`.openFile`, `.openURLInWindow`, `.findInDocument`, `.toggleBookmark`, `.navigateBack`, …). `NotificationHandlers` (`mdv/ContentView.swift:3124-3162`) subscribes every `ContentView` to every one of them with no check that its window is key; `AppDelegate.application(_:open:)` (`mdv/mdvApp.swift:188-199`) posts `.openURLInWindow` once per URL to the same audience. A second window is created by ⌘⇧O (`spawnNewWindow`, `mdv/ContentView.swift:2486-2500`) with its own `ContentView`. Consequences with two windows open: a Finder double-click, `open -a`, or `bin/mdv FILE` loads the file into **both** windows; ⌘O runs `NSOpenPanel.runModal()` twice in sequence; ⌘F opens both find bars; ⌘D adds a bookmark from each window's hovered/top block; ⌘← pops each window's stack; ⌘E opens the file twice. The comment at `mdv/mdvApp.swift:24-26` states the design assumption: "Single-window app".
+`loadFile` (`mdv/ContentView.swift:2503-2513`) checks `fileExists` and `isReadableFile` — both permission-level — then calls `history.add(path:)` and sets `selectedEntry`. The bytes are read only in `loadCurrentEntry` (`mdv/ContentView.swift:2743-2747`):
+
+```swift
+if let content = try? String(contentsOf: url, encoding: .utf8) {
+    rawMarkdown = content
+} else {
+    rawMarkdown = ""
+}
+```
+
+`markdownView` shows `emptyState` — the "No file open / Drag and drop, or press ⌘O" panel — whenever `rawMarkdown.isEmpty` (`mdv/ContentView.swift:1245-1248`). So for a Latin-1 file, or a file deleted between the existence check and the read: the history row is added at the top and selected in the sidebar, the watcher is armed on the path, `_indexFile` skips it silently (`mdv/Database.swift:429`), and the window shows the drop target with no message. The previous document is gone. The same branch runs when a sidebar row (F-063), ⌘← or ⌘0 targets a path deleted since, and for any zero-byte `.md` file, which therefore also displays "No file open" while a file is, in fact, open.
 
 **Why it matters**
 
-R-01, R-18, R-24, R-27 and §5.1 all describe per-window behaviour that only holds while one window exists. A verifier running T-35 (same file in two windows) sees the reload half work and, on the next ⌘D, sees two bookmarks. An implementer building from the spec would add key-window routing that the tree lacks — or, reading E-20, might assume multi-window is a first-class mode.
+E-03 is the failure model for the whole loading path, and §3.1 makes it a transition (`LOADING → previous state`). An implementer builds the abort; a verifier running T-39 expects the previous document and finds an empty window with a new row.
 
 **Potential consequence**
 
-Duplicate bookmarks, duplicate history entries, stacked modal panels, and a file "opened" into a window the reader was not looking at.
+T-39 fails as written; T-04's `chmod 000` case passes (that path is guarded), which hides the gap. A reader who opens a Windows-1252 file loses the document they were reading and gains a history row that can never be searched.
 
 **Recommended resolution**
 
-Choose one and say it: (a) keep R-01/R-18 as the requirement and mark them *open defect* in §11 with the fix (route notifications to the key window's `ContentView`, e.g. by including the target `NSWindow` in the notification and comparing to `NSApp.keyWindow`, or by moving the commands to `@FocusedValue`); or (b) re-scope the spec to the as-built single-window model: state in §0 that multi-window (⌘⇧O) is a secondary surface in which menu commands and open events act on **every** window, and reword E-20/T-35 to match. Either way add an E row for "command issued with two windows open" and a T step for it.
+Decide per D-16 and mark the row. If the requirement stands (recommended — it is what E-03, D-16 and T-39 already say), mark E-03/R-04 *open defect* in §11 with the fix: read and decode in `loadFile` before `history.add`, abort on failure, and pass the decoded string to the entry load so the file is read once. Separately, state what an **empty** file displays — as built the "No file open" panel; the honest rule is an empty page with the file selected — and add the case to T-39. Add to §3.1 `VIEWING` → "selected entry unreadable at load (sidebar row, ⌘←, ⌘0) → as E-03".
 
-### F-043 — No-argument launch reopens the most recent history entry; the spec says `EMPTY`
+### F-063 — Sidebar row, search hit and ⌘←/⌘→ select an entry without adding a history row or re-indexing
 
 **Severity:** HIGH
 
-**Location:** §3.1 `EMPTY` row ("Enters via: launch with no file"); R-01; R-06; T-28
+**Location:** §3.1 `LOADING` ("history row added (R-20), file indexed (R-26)" — for every entry into the state); R-01 (lists "a history-sidebar row, a search hit" among the open routes); R-20 ("every file opened, most recent first"); R-26 ("index a file's content … when it is added to history (opened, …)"); R-18 ("loads the file"); T-24 ("touch it → re-indexed on next open"); T-25
 
 **Observation**
 
-`ContentView`'s appear handler (`mdv/ContentView.swift:525-530`): with no `initialURL`, `selectedEntry = history.entries.first` and the document is loaded. `EMPTY` is entered on launch only when history is empty. No requirement says the last-read file is restored at launch, yet T-28 ("scroll to the middle, quit, relaunch: same position") passes only because it is.
+`selectedEntry` is assigned on six sites (`mdv/ContentView.swift`): `loadFile` and `loadDirectory` (`:2512`, `:2547`) go through `history.add`, which moves the row to the top, saves, and calls `Database.indexFile` (`mdv/HistoryManager.swift:27-40`). The other four do not: the sidebar `List(selection: $selectedEntry)` (`:651`), `openHit` when the hit's path is already in history (`:865-866`), `applySnapshot` for ⌘←/⌘→ (`:2228`), and `delete(_:)` (`:957`). None of them reorders history or re-indexes. Consequences:
 
-A likely secondary effect (not run, inferred from `onChange(of: selectedEntry)` at `mdv/ContentView.swift:318-340`): on a cold `open -a mdv x.md`, the main window first loads the history head, then receives `x.md`, so the previous session's file is pushed onto the back stack — ⌘← after a cold start goes to a file the reader did not open this session. Worth a T step.
+- clicking the fifth sidebar row leaves it fifth; R-20's "most recent first" holds for *added* files only;
+- a file edited on disk and re-opened from the sidebar keeps its stale FTS content until the next launch (`HistoryManager.init` re-indexes) — T-24's "re-indexed on next open" is true only for ⌘O/drop/link/bookmark/CLI opens;
+- ⌘← after swipe-deleting the displayed row (§3.1 says the snapshot is pushed) sets `selectedEntry` to an entry that is no longer in `history.entries`: the document is shown, no sidebar row is selected, and the index has already dropped it.
 
 **Why it matters**
 
-The first screen is the most observable behaviour an application has; two implementers reading §3.1 would build the drop target, and T-28 would fail for them.
+The spec uses "opened" for two different operations. An implementer following §3.1 routes every selection through the add path (the natural reading), producing a sidebar that reorders on every click and an index refreshed on every selection — materially different from the tree, and arguably better. A verifier cannot run T-24 without knowing which route "open" means.
+
+**Potential consequence**
+
+T-24 passes or fails depending on the route the tester chooses; T-25's "most recent first" is untestable for sidebar clicks; the stale-index case is invisible until a search returns text the file no longer contains.
 
 **Recommended resolution**
 
-Add to R-01 (or a new R-40): "On launch with no file argument the application MUST load the first history entry (the most recently opened path) into the main window; it MUST show the `EMPTY` state only when history is empty." Change the `EMPTY` row's *Enters via* to "launch with empty history; deletion of the last history row (F-050)". Add the cold-start-with-argument case to T-22 or T-28 and say what ⌘← does afterwards.
+Split the routes in R-01 and §3.1: **adding routes** (⌘O, ⌘⇧O, LaunchServices/`bin/mdv`, drop, link, bookmark, placeholder, directory) add-or-move the row and index; **selecting routes** (sidebar row, search hit, ⌘←/⌘→, delete-current-row) display an entry without touching history order or the index. Reword R-20 to "most recently *added* first", R-26 to "on add and on launch", and T-24's "on next open" to "on next ⌘O". For the deleted-row snapshot, choose: drop snapshots whose entry is removed (recommended, one line in `delete(_:)`), or specify that ⌘← re-adds the row. Add a T-25 step: "click the third row: the order is unchanged".
 
-### F-044 — Bookmark-title fallback is the first line stripped to 60 characters, `(line n)` when blank
+### F-064 — Files evicted by the 100-entry cap stay in the full-text index
 
 **Severity:** MEDIUM
 
-**Location:** R-27 ("else the block's own first 40 characters of source, else `(empty)`")
+**Location:** R-26 ("the search population is exactly the current history"); I-013; K-03; T-25
 
 **Observation**
 
-`bookmarkTitle(forBlockAt:)` (`mdv/ContentView.swift:2565-2593`): after the 40-block heading look-back, the fallback is the block's **first line**, passed through `stripInlineMarkdown` and trimmed, then `prefix(60)`; if that is empty the title is `(line <index+1>)`. `(empty)` is returned only when the document has no blocks at all. Headings found by the look-back are also passed through `MathMarkdown.plainText` and `stripInlineMarkdown` (R-27 does not say the title is the *display* text of C-02 rule 7, though R-21's TOC rule implies it).
+`HistoryManager.add` truncates `entries` to `maxEntries` (`mdv/HistoryManager.swift:34-36`) without calling `Database.removeFile` for the evicted path; `reindex(paths:)` at launch only refreshes listed paths and never prunes `articles`. After the 101st distinct open, ⌘⇧F still returns the evicted file; `openHit` then falls into its "shouldn't happen today" branch (`mdv/ContentView.swift:867-871`) and `loadFile`s it, re-adding the row. T-25 checks swipe-delete removal but not eviction.
 
 **Why it matters**
 
-Titles are user-visible and T-26 checks them; a verifier would expect 40 characters of raw source.
+R-26's population rule is a MUST an implementer will build (prune on evict, or prune at launch by set difference) and a verifier will test; the tree does neither.
+
+**Potential consequence**
+
+Search hits for files the reader deliberately let fall off the list; a growing `mdv.db` for heavy users.
 
 **Recommended resolution**
 
-Rewrite the clause: "…else the block's first line with inline Markdown stripped (C-12), truncated to 60 characters; `(line n)` (1-based block index) when that is blank; `(empty)` when the document has no blocks. A heading title is its C-02 rule-7 display text." Move 60 into K-06.
+Mark R-26 *open defect* (fix: `removeFile` for each evicted path in `add`, and a launch-time `DELETE FROM articles WHERE path NOT IN (…)`), or narrow R-26 to "swipe-delete removes; eviction does not". Add a T-25 step: "open 101 files; ⌘⇧F for a word unique to the first: no hit".
 
-### F-045 — `stripInlineMarkdown` removes only the opening `_` of `_emphasis_`
-
-**Severity:** MEDIUM (implementation; spec wording also unclear)
-
-**Location:** C-12 ("word-internal `_…_` markers"); `mdv/ContentView.swift:2962-2981`
-
-**Observation**
-
-The underscore rule is `(?<![A-Za-z0-9])_(?=[^_]+_)` — it matches the *opening* underscore of an `_…_` pair when not preceded by an alphanumeric, and nothing else. Run against the real function: `"_foo_ bar"` → `"foo_ bar"`; `"snake_case_name"` → unchanged (correct). So a heading `## _Draft_ notes` shows in the TOC and in bookmark titles as `Draft_ notes`. The slug is unaffected only by luck (`foo_` → `foo` after C-11's trailing-`_` strip; but `_Draft_ notes` → `draft_-notes`, which GitHub renders as `draft-notes` — a fragment written for GitHub misses).
-
-The spec's phrase "word-internal `_…_` markers" describes the opposite of what the regex targets (it *excludes* word-internal underscores).
-
-**Recommended resolution**
-
-Spec: "…and `_…_` emphasis markers whose opening `_` is not preceded by a letter or digit (word-internal underscores are kept)". Implementation: also remove the closing underscore (e.g. `(?<![A-Za-z0-9])_([^_]+)_` → `$1`). Mark C-12 *open defect* in §11 until fixed; add `_Draft_ notes` to T-08 and to the T-22 slug cases.
-
-### F-046 — "Never modally" is false: CLI installer and editor-failure raise `NSAlert`
+### F-065 — Fenced code blocks do not scale with ⌘=/⌘-; the spec is silent
 
 **Severity:** MEDIUM
 
-**Location:** C-14 ("User-visible failures are reported in place, never modally"); §5.1 *Install Command Line Tool…* ("failure: system beep, symlink untouched"); R-23
+**Location:** R-30 ("scale body text … and MUST also scale document math"); C-05; T-11 ("body text, headings, and math grow together")
 
 **Observation**
 
-`CLIInstaller.install()` (`mdv/CLIInstaller.swift:17-48,100`) shows four different `NSAlert`s: "CLI helper missing", "Already installed", "Install failed" (with the AppleScript error), and a success alert "Command line tool installed"; the admin-rights path is an AppleScript `with administrator privileges` dialog. There is no beep. `openCurrentFileInEditor` (`mdv/ContentView.swift:1099-1112`) shows a modal alert "Couldn't open in external editor" with a *Choose Different Editor…* button. PNG-export failure does beep (`mdv/MermaidRenderer.swift:1093,1100`), and missing bookmarks beep (F-055).
+`CodeRenderer.render` sets the font to `theme.baseFontSize * 0.85` (`mdv/CodeRenderer.swift:82`, `:132`, `:146`) — the theme's unscaled base — inside the `AttributedString`, and the `.codeBlock` theme style deliberately applies no text style on top (`mdv/ThemeManager.swift:560-568`). `markdownTheme(scale:)` scales `bodySize` and the inline-code `FontSize(.em(0.90))` follows it. So at 150 % the prose is 24 pt, inline code 21.6 pt, and fenced code still 13.6 pt.
 
 **Why it matters**
 
-C-14 is the cross-cutting rule a verifier applies everywhere; two counter-examples make it unusable as written, and §5.1's row is simply wrong.
+R-30 names what scales; a reasonable implementer scales everything typographic, including fences, and T-11 does not say otherwise. Two implementations differ visibly at every zoom level.
+
+**Potential consequence**
+
+A verifier at T-11 either passes or fails the fence depending on their reading; a reader zooming for legibility gets the one block type that does not move.
 
 **Recommended resolution**
 
-Narrow C-14 to *document-derived* failures ("failures arising from document content are reported in place, never modally") and list the two modal cases as intended: "CLI-install outcomes and an external-editor launch failure are reported with an `NSAlert`". Fix the §5.1 row: "outcome alerts: helper missing / already installed / failed (message) / installed; admin auth via AppleScript; cancel leaves the symlink untouched".
+Decide and state it in R-30: either "fenced code is exempt (fixed at $0.85 \times$ base)" — an odd product rule — or mark *open defect* with the fix (`fontSize: theme.baseFontSize * scale * 0.85`, and add `scale` to the C-05 cache key). Add the fence to T-11 either way.
 
-### F-047 — Find counts on block source, highlights on rendered inline text, and never distinguishes the current occurrence within a block
+### F-066 — "Shell language" for *Copy Without Prompts* is undefined
 
 **Severity:** MEDIUM
 
-**Location:** R-24 ("Matching MUST be case-insensitive substring over each block's source … MUST highlight the matched characters … ⌘G MUST step per occurrence … and scroll the match into view")
+**Location:** R-08 ("blocks in a shell language whose non-empty lines are at least half `$ `/`# `-prompted")
 
 **Observation**
 
-`recomputeMatches` (`mdv/ContentView.swift:2339-2355`) counts occurrences over the raw block source, but a `SearchMatch` carries only `blockIndex` (`:272-274`). `highlightedAttributedString` (`:2296-2337`) strips heading/blockquote/list markers, parses the block as inline Markdown with `AttributedString(markdown:)`, and highlights every occurrence of the query in **that** text at one of two alphas: 0.55 when the current match's block is this block, 0.32 otherwise. Consequences a verifier will observe: (1) a query that matches only markup (`**`, a link URL, `# `) or crosses markup (`bo**ld**` vs `bold`) is counted but not highlighted, or highlighted but counted differently; (2) stepping ⌘G through three hits in one block changes "*n* of *m*" but nothing on the page moves or changes tint; (3) in highlight mode a heading with `$…$` shows LaTeX source, and an ordered list loses its numbers.
+`isShellLanguage` (`mdv/CodeRenderer.swift:254-257`) tests the **raw first word** of the fence info string, lower-cased, against `bash sh zsh fish shell console` — not the C-05 resolution. `fish` and `console` are not in C-05 (they highlight as plain) yet are prompt-aware; a fence tagged `shell-session` or `sh-session` is not. The half rule itself matches R-08 (`prompted * 2 >= lines.count` over non-empty lines).
 
 **Why it matters**
 
-T-23 says "⌘G visits each" — a tester would expect a visible cursor. Two implementations (source-highlighting vs render-highlighting) both satisfy the R-24 sentence and behave differently.
+R-08 is a MUST with an enumerable trigger. Implementers will pick C-05's bash aliases (`bash sh zsh shell`) and miss `fish`/`console`, or add `powershell`.
+
+**Potential consequence**
+
+T-06 passes for `bash` and says nothing about the rest; the menu item appears or not for `console` blocks depending on the build.
 
 **Recommended resolution**
 
-State the as-built split: "*m* and the *n*-th step are computed on block source; the highlight is applied to the block's inline-rendered text (block markers stripped, inline Markdown interpreted, math shown as source), so a match inside markup may be counted but not highlighted. All occurrences in the current match's block share the stronger tint; the current occurrence is not otherwise distinguished; ⌘G scrolls the block into view." Or, if the intent is per-occurrence focus, mark R-24 *open defect* and store the source range in `SearchMatch`.
+Put the set in C-05 as a third list: "prompt-aware fence words (raw first word, case-insensitive): `bash sh zsh fish shell console`", and cite it from R-08.
 
-### F-048 — Inline-highlight versus tint is decided by exclusion in the code, by inclusion in the spec
+### F-067 — Column width: `articleMaxWidth` caps the padded frame, not the content
 
 **Severity:** MEDIUM
 
-**Location:** R-24 ("Paragraph, heading, list, and blockquote blocks that contain no image MUST highlight…; every other block (code, table, and any block containing an image) MUST instead be tinted"); E-17
+**Location:** K-13 ("the window's content area minus the sidebar and inspector … minus $2 \times$ `articleHorizontalPadding`, capped at `articleMaxWidth`"); R-11; K-07; K-10 ("article max width 860 pt, gutter 40 pt"); T-18
 
 **Observation**
 
-`shouldInlineHighlight` (`mdv/ContentView.swift:2275-2294`) inline-highlights **every** matching block except: a block starting with ` ``` ` or `~~~`; a block whose first line contains `|` and whose second line consists only of `-:| `; a block containing `![` anywhere. So a `$$` math-fence block, an HTML block, a thematic break, a setext heading, or a `<details>` block is inline-highlighted (rendered as inline text — display math becomes LaTeX source while the find bar is open), whereas the spec says "every other block" is tinted. The table test also differs from C-10's ("a `|---|` separator row").
+The article stack is built as `.padding(.horizontal, articleHorizontalPadding)` **then** `.frame(maxWidth: articleMaxWidth)` (`mdv/ContentView.swift:1323-1327`), so the cap applies to the padded frame and the content is narrower by the padding; each block additionally carries `.padding(.horizontal, 6)` (`:1256`). K-13's sentence order reads as "subtract, then cap", which yields 860 pt of content in a wide window; the tree yields $860 - 80 - 12 = 768$ pt, and a Mermaid raster at $768 - 36 = 732$ pt.
+
+**Why it matters**
+
+T-18 asks the verifier to compare the raster width to "the column width of K-13 minus 36 pt" — an 80–92 pt discrepancy is a clear fail against the formula as written.
+
+**Potential consequence**
+
+T-18 fails for a conforming build; an implementer reproducing K-13 literally renders every diagram 92 pt wider than the app.
 
 **Recommended resolution**
 
-Restate R-24/E-17 by exclusion: "A matching block is tinted as a whole when it is a code fence, a GFM table (first line contains `|`, second line only `-`, `:`, `|`, space), or contains `![`; every other matching block is inline-highlighted (F-047)". Decide whether a `$$` math-fence block should be tinted (it probably should — add it to the exclusion list and mark *open defect*, or accept and add it to E-17).
+Write K-13 as a formula with the cap inside:
 
-### F-049 — Which in-document jumps push a back-snapshot is unspecified
+$$
+w_{\mathrm{col}} = \min\bigl(w_{\mathrm{area}} - w_{\mathrm{side}} - w_{\mathrm{insp}},\; w_{\max}\bigr) - 2p - 2b
+$$
+
+where $w_{\mathrm{area}}$ is the window content width, $w_{\mathrm{side}}$ and $w_{\mathrm{insp}}$ are the pane widths plus their 8 pt handles when shown (0 when hidden), $w_{\max}$ is `articleMaxWidth` ($\infty$ when the theme sets none), $p$ = `articleHorizontalPadding`, and $b = 6$ pt is the per-block padding. Restate K-10's "article max width 860 pt" as the padded-frame cap.
+
+### F-068 — A mid-line `$$…$$` uses the `display/` host and display typesetting
 
 **Severity:** MEDIUM
 
-**Location:** R-18 ("A same-document fragment jump MUST push a snapshot"); R-21 (TOC rows); R-27 (opening a bookmark); R-28 (⌘0)
+**Location:** C-07.1 (the URL listing: `mdv-math://inline/… // $…$, or $$…$$ mid-line`); K-08 ("inline spans typeset in `.text` style, display in `.display`"); E-16
 
 **Observation**
 
-`pushSameDocSnapshot` is called from two places: the TOC row button (`mdv/ContentView.swift:1962`) and a same-document `#fragment` click (`:2123`). A same-file bookmark jump (`jumpTo`, `:2679-2695`), ⌘0 (`:2719`), and ⌘G do **not** push, so ⌘← after ⌘1 does not return to where the reader was. R-18 names only the fragment case; R-21 is silent; the code comment calls a TOC click "like a same-doc fragment click". Also R-28: the placeholder is captured with the same `hoveredBlock ?? topVisibleBlock` rule as ⌘D and carries a path, so ⌘0 loads the placeholder's file if another is displayed — R-28's "at the current spot … return to it" does not say either.
+`MathMarkdown.rewrite` calls `spec(latex, display: true, at: i)` for every `$$…$$` span (`mdv/MathRenderer.swift:167-186`), whether or not it is on its own line; `MathSpec.url` maps `display: true` to the `display` host and `MathImageCache` to `labelMode: .display`. Only the paragraph placement (own paragraph vs. inline image via `MathInlineImageProvider`) depends on line position. So `text $$\sum_{i=1}^n x_i$$ text` is an inline image typeset in display style (limits above and below the sum), not `.text` style as C-07.1/K-08 imply.
+
+**Why it matters**
+
+C-07.1 is a contract with a decoder on the other side; a unit test on the URL (§9.0 lists `MathMarkdown.rewrite` under the unit group) written from the spec fails. Visually, display-style limits inside a sentence are a deliberate Pandoc-compatible choice that the spec should state rather than contradict.
+
+**Potential consequence**
+
+T-07 disagreement on how a mid-line `$$` sum should look; a URL golden test that fails against the tree.
 
 **Recommended resolution**
 
-R-18: "A same-document jump from a `#fragment` link **or a TOC row** MUST push a snapshot; jumps from a bookmark, the placeholder, or find stepping MUST NOT." R-28: "the placeholder anchor is chosen by the R-27 rule (hovered block, else topmost visible) and records the path; ⌘0 loads that file first if it is not displayed." Add the ⌘1-then-⌘← case to T-22 or T-26.
+Correct C-07.1: `inline/` is emitted for `$…$` only; `display/` for every `$$…$$`; "own paragraph" is a placement rule, not a host rule. Restate K-08 as "`$…$` → `.text`; `$$…$$` → `.display`, in both placements". E-16's "at text size" is then about size, not mode — say so.
 
-### F-050 — Swipe-deleting the displayed row switches document or empties the window; "history cleared" has no UI
-
-**Severity:** MEDIUM
-
-**Location:** §3.1 (`EMPTY` "Enters via: … history cleared"; `VIEWING` "Leaves via"); R-20; R-26 ("swipe-delete, clear")
-
-**Observation**
-
-`delete(_:)` (`mdv/ContentView.swift:953-959`): if the deleted row is the displayed one, `selectedEntry = history.entries.first` — the next most recent file is loaded (through the normal `LOADING` path, with a back-stack push and a scroll-position persist for the leaving file), or the window becomes `EMPTY` when the list is now empty. Neither transition is in §3.1. `HistoryManager.clear()` exists (`mdv/HistoryManager.swift:50-55`) but nothing calls it: there is no *Clear History* menu item or button, so the `EMPTY` row's "history cleared" and R-26's "clear" describe an unreachable path.
-
-**Recommended resolution**
-
-§3.1 `VIEWING` *Leaves via*: add "swipe-delete of the displayed row → `LOADING` of the new first history entry, or `EMPTY` if none". `EMPTY` *Enters via*: replace "history cleared" with "deletion of the last history row" (and F-043's launch case). R-26: drop "clear" or add the menu item to §5.1 and R-20. Add the deleted-current-row case to T-25.
-
-### F-051 — `migrate()` does not run in a transaction
-
-**Severity:** MEDIUM
-
-**Location:** §3.3 ("`migrate()` MUST apply forward migrations by comparing it and bump it in the same transaction")
-
-**Observation**
-
-`Database.migrate()` (`mdv/Database.swift:174-213`) issues its `DROP`/`CREATE`/`ALTER`/`INSERT` statements as separate `exec` calls; the only `BEGIN`/`COMMIT` in the file wraps bookmark reordering (`:307,317`). A crash between the `ALTER TABLE` and the version bump leaves the schema at 4 and `schema_version` at 3; the next launch re-runs the `ALTER`, which fails ("duplicate column"), is logged, and the bump then succeeds — so the outcome is benign, but the "as-built MUST" is false and I-007's spirit (no partial state) is not what the code provides here.
-
-**Recommended resolution**
-
-Either wrap the migration block in `BEGIN IMMEDIATE … COMMIT` and keep the sentence, marking it *open defect* until then, or change the sentence to the as-built rule: "migrations are idempotent statements applied in order; the version is bumped last; a failed statement is logged (E-12) and does not stop the sequence".
-
-### F-052 — Slug: whitespace adjacent to a hyphen yields no hyphen; `a - b` and `C++ & Rust` differ from GitHub
-
-**Severity:** MEDIUM
-
-**Location:** C-11; I-010; R-19; T-22
-
-**Observation**
-
-`headingSlug` (`mdv/ContentView.swift:2252-2273`) emits `-` for a whitespace run only when the previous emitted character is not `-`, and drops every other character silently. Run against the real function: `a - b` → `a--b` (GitHub: `a---b`); `a -- b` → `a---b`; `C++ & Rust` → `c-rust` (GitHub: `c--rust`); `a_ b` → `a_-b`. Because both the fragment and the heading go through the same function, links written **in mdv's dialect** resolve; links written for GitHub (`#a---b`, `#c--rust`) do not, and C-11's prose ("collapse runs of whitespace into one `-`") reads as the GitHub rule, not the code's. I-010 promises that "`#fragment` links written for GitHub resolve identically".
-
-**Recommended resolution**
-
-Decide: (a) match GitHub — every whitespace run becomes one `-` even after a `-` or a dropped character, and mark C-11 *open defect*; or (b) keep the code and write its rule precisely: "a whitespace run emits `-` only if the output is non-empty and does not already end in `-`". Add `a - b` and `C++ & Rust` to T-22 with the expected slugs.
-
-### F-053 — Several files in one open event, or several items in one drop: which is shown is unspecified
-
-**Severity:** MEDIUM
-
-**Location:** R-01; R-03; §5.2 (`mdv FILE…`)
-
-**Observation**
-
-`application(_:open:)` posts one notification per URL in order; each `loadFile` adds a history row and sets `selectedEntry`, so all files land in history and the **last** URL is displayed (and, per F-042, in every window). `handleDrop` (`mdv/ContentView.swift:2813-2819`) reads `providers.first` only — a multi-item drop opens the first item and ignores the rest without error. R-03 says "a dropped item"; R-01 says "a file"; §5.2 says the app "receives them via LaunchServices" and stops.
-
-**Recommended resolution**
-
-R-01: "When an open event carries several URLs, each is added to history in the order received and the last is displayed." R-03: "Only the first item of a multi-item drop is considered." Add both to T-03/T-04.
-
-### F-054 — "Heading block" is undefined; as built it means a `tocHeadings` block
-
-**Severity:** MEDIUM
-
-**Location:** R-22 ("Heading blocks MUST NOT be text-selectable; the pointer over a heading MUST be the pointing hand; a click on a heading…"); C-02
-
-**Observation**
-
-`isHeadingBlock(idx)` is `tocHeadings.contains { $0.blockIndex == idx }` (`mdv/ContentView.swift:1437`), i.e. only single-line ATX `#`–`###` blocks (C-02 rule 7). An `####` heading, a setext heading, or an ATX heading followed on the next line by a paragraph (same block, rule 7 uses the first line only — this one *is* a heading block) behave as prose: selectable, no hand cursor, no section copy. R-22 does not say which headings it means; a reader of R-07 ("GitHub-flavoured Markdown") would assume all six levels.
-
-**Recommended resolution**
-
-In R-22 replace "Heading blocks" with "TOC heading blocks (the blocks listed in `tocHeadings`, C-02 rule 7)"; add to E-22: "an h4–h6 or setext heading is also not clickable and is text-selectable like prose". Add an `####` click to T-30.
-
-### F-055 — Back/Forward and Jump to Placeholder are never disabled; empty jumps beep, not no-op
+### F-069 — Swipe-deleting a history row also deletes the path's scroll position
 
 **Severity:** LOW
 
-**Location:** §5.1 rows *Navigate · Back / Forward* ("disabled when empty"), *Set Placeholder / Jump to Placeholder* ("Jump disabled when none"); E-09 ("opening it is a no-op"); T-26, T-27
+**Location:** R-06, R-26, C-08
 
 **Observation**
 
-The Back/Forward and Jump-to-Placeholder buttons in `mdvApp.swift:88-98,155-163` carry no `.disabled`; `goBack`/`goForward` return silently on an empty stack and `jumpToPlaceholder` beeps (`mdv/ContentView.swift:2719-2722`). A bookmark whose file is missing beeps (`:2634-2640`), as does an empty slot (`:2652-2656`) — though the slot buttons *are* disabled (`mdvApp.swift:173`), so the slot beep is unreachable from the menu. Zoom In/Out are disabled at the clamps, which §5.1 does not say.
+`Database.removeFile` deletes from `articles` **and** `scroll_positions` (`mdv/Database.swift:395-409`). R-26 specifies the index removal; nothing mentions the scroll anchor. Bookmarks for the path are kept.
+
+**Why it matters**
+
+Re-opening the file later starts at the top; a spec reader expects C-08 anchors to survive history edits as bookmarks do.
 
 **Recommended resolution**
 
-Fix the three cells: Back/Forward "always enabled; no-op when the stack is empty"; Jump "always enabled; beeps when no placeholder"; E-09 "opening it beeps". Add "disabled at the limits" to the Zoom row. T-27: "⌘0 beeps" rather than "is disabled".
+Add to R-26: "and its `scroll_positions` row; bookmarks are kept".
 
-### F-056 — Diagnostics list omits the font-registration and editor-failure `NSLog` lines
+### F-070 — Stored-value edge cases
 
 **Severity:** LOW
 
-**Location:** R-35 ("The only diagnostics it emits are `NSLog` lines on persistence-store failures (E-12) and the font-registration lines SwiftMath prints"); T-36
+**Location:** C-04 (`mdv_font_scale` "clamped on read"; `mdv_theme_id`); R-29; R-30; K-06; R-26
 
 **Observation**
 
-Other `NSLog` sites: `FontRegistration.swift:38,46` (`[mdv] missing bundled font: …`, `[mdv] register <font>: <error>`) and `ContentView.swift:1101` (`[mdv] failed to open in editor: <error>` — the `NSError` description can include the document path). `Database.swift:453` logs `indexFile insert failed for <path>` — a path, which R-35 does not forbid but T-36 tolerates only inside a `[mdv]` line (it is one). All start with `[mdv]`, so T-36 passes; R-35's "only" does not.
+(a) `setFontScale` rounds to one decimal after clamping (`mdv/ThemeManager.swift:1039-1047`); a stored `1.25` is clamped but not snapped on read, so the first ⌘= lands on `1.4` (a $+0.15$ step), and the HUD shows 125 % until then. (b) An unknown `mdv_theme_id` resolves to `high-contrast` via `MDVTheme.byID` (`:959-961`) while `selectedID` keeps the unknown string (`:1005`), so the toolbar picker has no matching item until the reader picks one. (c) `_indexFile` compares `Int64(mtime)` (`mdv/Database.swift:420-427`): an edit within the same second as the last indexing is skipped — K-06 notes whole-second truncation for C-08 only.
 
 **Recommended resolution**
 
-R-35: "…are `NSLog` lines prefixed `[mdv]` (persistence-store failures, E-12; bundled-font registration failures; external-editor launch failure, which may include the file path) and the SwiftMath font-registration lines."
+C-04: "values outside the listed type, range, or enumeration fall back to the default; `mdv_font_scale` is clamped and then snapped to one decimal on the first step". K-06: "index mtime gate: whole seconds".
 
-### F-057 — FSEvents `NoDefer` makes a burst up to two reloads; the transient rule as built defers every empty read
+### F-071 — Find state across a live reload
 
 **Severity:** LOW
 
-**Location:** R-05 ("coalescing bursts of change events within 50 ms into one reload"; "within 500 ms of a previous change event"); E-21; T-29 ("five times within 50 ms: one reload"); K-06
+**Location:** R-24, R-05
 
 **Observation**
 
-The stream is created with `kFSEventStreamCreateFlagNoDefer` and latency 0.05 (`mdv/ContentView.swift:3200-3227`): the first event of a burst is delivered immediately and later events within 50 ms are batched into at most one more delivery. A five-save burst therefore produces up to two callbacks and — if the first read sees intermediate content — two reloads. The F-034 fix does not measure "500 ms since a previous event": it treats **every** zero-byte read (while the page is non-empty) as transient and re-reads after 0.5 s (`:2760-2772`); a genuinely emptied file is shown empty 0.5 s later, which is indistinguishable in practice but not what R-05 literally says. A file that becomes and stays undecodable keeps the old page indefinitely (until the next event); R-05 covers the 500 ms window only.
+On `rawMarkdown` change with the find bar open, `recomputeMatches()` runs and resets `currentMatchIndex` to 0 (`mdv/ContentView.swift:427`, `:2339-2355`); the bar's *n* jumps to 1 of the new *m*. The query is matched with `.caseInsensitive` only — untrimmed, no diacritic folding (unlike the global search's `remove_diacritics 2`, K-09).
 
 **Recommended resolution**
 
-R-05: "events within 50 ms after the first are batched (at most two reloads per burst); a zero-byte read while content is displayed is re-read after 500 ms and whatever is read then is shown; an undecodable read is ignored and the page is kept until a later event yields a decodable file." T-29: "at most two reloads; the final content is displayed".
+One clause in R-24: "a reload (R-05) recomputes *m* and returns to the first occurrence; the query is matched verbatim (no trimming, no diacritic folding)".
 
-### F-058 — `Help.md` is rewritten on every ⌘?, so its scroll position is never restored
+### F-072 — Release-engineer inputs are not in the spec
 
 **Severity:** LOW
 
-**Location:** §3.3 Help file row ("Written when: first ⌘? per launch"); R-31 ("copied on demand")
+**Location:** §5.3, §10 ("Environment variables: `MDV_APP`"), §1 (Release engineer)
 
 **Observation**
 
-`HelpManager.openHelp()` (`mdv/HelpManager.swift:14-31`) deletes and re-copies the file on every call ("Always overwrite — keeps the content in sync with the running build"). Side effects: the file's mtime changes on each ⌘?, so the C-08 mtime check fails and Help always opens at the top; and if Help is already displayed, the overwrite fires the watcher and reloads it.
+`make dist` and `github-release` read `VERSION` (tag override), `TEAM_ID` and `CERT_NAME` (defaults hard-coded to one individual's Developer ID identity, `Makefile:40-41`), `NOTARY_PROFILE` (default `mdv-notary`, `:51`) and `NOTES_FILE` (`:57`); `sign` and `notarize` exit 1 when the first two are empty. §5.3 mentions only `VERSION`.
 
 **Recommended resolution**
 
-§3.3: "every ⌘? (overwritten)". Add to R-31 or E: "Help.md's scroll position is therefore not restored across ⌘? invocations." Or copy only when the bundled file differs (compare size/hash) and keep the §3.3 wording.
+A "Release inputs" line under §5.3 listing the five variables, their defaults, and which targets require them; note that the shipped defaults name a specific signing identity and must be overridden by any other release engineer.
 
-### F-059 — Dependency, extension, and provenance details drifted from the tree
+### F-073 — Launcher argument edge cases
 
 **Severity:** LOW
 
-**Location:** front matter; §10; C-01; §1 (Finder actor); §5.3; D-03
+**Location:** §5.2, R-33
 
 **Observation**
 
-- Front matter says "SwiftTreeSitter 0.8"; `Package.resolved` has `swifttreesitter` 0.25.0 and `tree-sitter` 0.25.10 (§10's "from 0.8.0" is the manifest floor, not the pin).
-- §10 and D-03 say "four documented patches"; `Vendor/SwiftMath/README.md` lists five code changes (new `MathFontBundle.swift`, `MathFont`/`MTFont` edits, public `MTMathAtom.init`, `\boxed` across four files) plus the font-bundle trim — T-34 uses the README, so state "the patches listed in the README" rather than a count.
-- C-01 says document-type extensions `[md, markdown]`; `Info.plist` has `md, markdown, mdown`. §1's Finder row lists `.md`/`.markdown`.
-- Front matter *Sources*: "git history through `a6feb14`" — the tree is at `fb5794b` and the spec cites `f3c94de`'s fix.
-- §5.3: CI also runs on `pull_request` and `workflow_dispatch` (build only; the `latest` publish is push-to-`main`); `clean` also removes `build_icon/`.
+`bin/mdv:58` accepts `-` only when it is the sole argument; `mdv - a.md` reaches the file loop and exits 1 with `mdv: no such file: -`. The loop (`:67-74`) reports and exits on the **first** missing argument only. `-h`/`--help`/`--version` run after `find_app`, so with no bundle they print the not-found error and exit 1 (§5.2's "any, bundle not found" row covers this, but R-33's "print the bundle version for `--version`" reads as unconditional).
 
 **Recommended resolution**
 
-Correct each; cite resolved versions in §10 alongside the floors.
+Add the two rules to the `mdv -` and `mdv FILE…` rows.
 
-### F-060 — Directory ordering collation and filters; siblings are indexed although never "opened"
+### F-074 — Placeholder or back-stack target that no longer exists
 
 **Severity:** LOW
 
-**Location:** R-02 ("alphabetically-first"); R-26 ("index a file's content … when it is opened")
+**Location:** R-28, R-18, E-09
 
 **Observation**
 
-`loadDirectory` (`mdv/ContentView.swift:2519-2548`) skips hidden files, drops unreadable files, and sorts with `localizedCaseInsensitiveCompare` on the last path component — `B.md` sorts after `a.md`, which a byte-order implementation would not do. Sibling rows are added through `history.add`, which indexes them (`HistoryManager.swift:38`), so files that were never displayed are searchable; R-26's "when it is opened" should read "when it is added to history".
+`jumpToPlaceholder` → `jumpTo` → `loadFile` returns silently when the file is gone (`mdv/ContentView.swift:2679-2694`, `:2505`): no beep, no navigation, the placeholder is kept. ⌘← to a deleted file goes through `applySnapshot` → `loadCurrentEntry` and shows the empty window of F-062. A bookmark in the same situation beeps (E-09).
 
 **Recommended resolution**
 
-R-02: "…the first file by case-insensitive localized comparison of the filename, ignoring hidden and unreadable files…". R-26: "when it is added to history (open or directory sibling)".
+An E row: "placeholder or snapshot whose file is missing: ⌘0 beeps (as E-09); ⌘←/⌘→ skips the snapshot" — or document the as-built silence.
 
-### F-061 — Editorial
+### F-075 — Editorial and provenance
 
 **Severity:** LOW
 
-**Location:** §4 (C-15 sits between C-12 and C-13); §12 (D-18 sits between D-16 and D-17); revision history (v0.4 listed above v0.3); §3.3 Render caches row (Unicode `≤` in a normative table row — use `$\leq$`)
+**Location:** front matter; §3.3; §11 R-40; C-06.1 rule 3; C-07.2; C-12
+
+**Observation**
+
+- Front matter: "as-built … at commit `fb5794b`" — HEAD is `a255106`; the intervening code commit `112fcaf` (Package.swift `exclude: ["Help.md"]`; `DefaultInlineImageProvider.default`) is behaviour-neutral but the pointer should move with each spec version.
+- §3.3 History list "Written when: every open, delete, clear" — R-26 says clear has no UI; and "every open" is "every add" (F-063).
+- §11 R-40 cites `initialURL`; it is set only by `spawnNewWindow` (⌘⇧O, `:2487`). A cold-start file argument arrives as `.openURLInWindow` after `onAppear` has loaded the history head — which is exactly why R-40 leaves the back-stack question to T-28. Cite `NotificationHandlers` / `application(_:open:)` instead.
+- C-06.1 rule 3: colour names are mapped only when preceded by `fill:`, `stroke:` or `color:` (`mdv/MermaidRenderer.swift:1028-1034`); a bare name elsewhere on a `style` line is passed through.
+- C-07.2: `\operatorname{X}` (unstarred) is also rewritten to `\mathrm{X}` (`mdv/MathRenderer.swift:563`).
+- C-12: "the next heading with level $\leq$" means the next **TOC** heading (`sectionRange` searches `tocHeadings`, `:1450-1452`); an h4–h6 or setext heading never ends a section. Say "TOC heading (C-02 rule 7)".
 
 **Recommended resolution**
 
-Reorder; replace the symbol.
+Apply as listed.
 
 ## 5. Requirements Review
 
-Requirements remain observable and, for the renderer and persistence surfaces, precise. The gap this pass exposes is **coverage of the shell**: launch (F-043), windows (F-042), multi-URL events (F-053), history deletion (F-050), and the back-stack policy for each kind of jump (F-049) are behaviours every reader meets on day one and none is written down. Two constants were written from memory rather than the code (F-044). Recommend, for v0.5, the same rule the second pass proposed and extend it: every R row that names a number or a menu-state is checked against the symbol §11 cites, and every §5.1 "disabled" cell is checked against a `.disabled` modifier.
+R-01..R-40 are observable and, with the exceptions above, precise. The requirement set is complete for the product as scoped; no new requirement is missing, but two existing ones need their populations defined: R-20/R-26 ("opened" = added, F-063) and R-30 (which block types scale, F-065). R-08's trigger set (F-066) is the only requirement whose condition is not derivable from the spec. No requirement conflicts with another; the conflicts are spec-versus-tree.
 
 ## 6. Interface and Data-Contract Review
 
-C-01 extension list is stale (F-059). C-03, C-04, C-05, C-08 (fingerprint 80, resolve rule, mtime `< 1.0`), C-13, C-15 and §5.2 were re-verified this pass and hold. One precision note on C-08: `file_mtime` is stored as `Int64(mtime)` (truncated to whole seconds) while the comparison uses the fractional current mtime, so the tolerance is effectively "same or next second" — within the 1 s the spec states, but a second write inside the same second is not detected; not a finding, worth a sentence.
+C-01, C-03, C-04, C-05 (resolution and aliases), C-06.1 (order and lists), C-06.3, C-08 (fingerprint, resolve, mtime tolerance), C-13, C-15, §5.1, §5.2 and §5.3 were read against the code and match. C-07.1's host rule is wrong for mid-line `$$` (F-068). C-05 needs the prompt-aware fence set (F-066). C-04's invalid-value behaviour is unstated (F-070). §5.3 lacks the release inputs (F-072). The persistence schema is unchanged and correct (`schema_version` 4).
 
 ## 7. State and Failure Review
 
-§3.1 is missing the launch-restore entry (F-043), the delete-current-row transitions (F-050), and describes an unreachable "history cleared" entry. The F-034 rule is implemented as D-18 chose; its literal wording differs slightly from the code (F-057). C-14's universal "never modally" has two counter-examples (F-046). The multi-window case has no failure model at all (F-042).
+§3.1 is the right shape but its `LOADING` row bundles two different entries (add-route vs. select-route, F-063) and its `unreadable → previous state` transition is not what the tree does for the decode failure (F-062). A corrected lifecycle the author can paste:
+
+```mermaid
+stateDiagram-v2
+    [*] --> EMPTY : launch, empty history (R-40)
+    [*] --> LOADING : launch, history head (R-40)
+    EMPTY --> LOADING : add route or select route (R-01)
+    LOADING --> VIEWING : read + decode OK (R-04)
+    LOADING --> VIEWING : decode fails, prior document kept (E-03, intended)
+    LOADING --> EMPTY : decode fails, no prior document (E-03, intended)
+    VIEWING --> LOADING : add route (row added or moved, indexed) or select route (row untouched)
+    VIEWING --> EMPTY : last history row deleted (R-20)
+    VIEWING --> RELOADING : file changed on disk (R-05)
+    RELOADING --> VIEWING : content swapped, position kept
+    VIEWING --> CLOSED : window close / quit (R-06)
+    CLOSED --> [*]
+```
+
+*Figure — proposed §3.1 with add/select routes split; the two "intended" edges are the F-062 open defect.* Failure semantics elsewhere (E-01, E-02, E-05..E-25) hold; the watcher rules (R-05/E-21) were re-verified against `loadCurrentEntry`'s callback and match exactly, including the second read after 0.5 s ignoring a failed read.
 
 ## 8. Determinism and Algorithm Review
 
-Verified deterministic and as specified: block split (incl. CRLF), TOC extraction, FTS query construction, fingerprint/resolve, language alias resolution, zoom clamps. Diverging from spec: `stripInlineMarkdown` (F-045), `headingSlug` around hyphens (F-052), find highlighting (F-047/F-048). §7.1 is unchanged and adequate.
+Verified deterministic and as specified this pass: directory selection (R-02: extension set, `skipsHiddenFiles`, readability, `localizedCaseInsensitiveCompare`, README stem match, sibling order), drop filter (R-03), block split and TOC (C-02 rules 1–7 including the `$$` fence and the h1–h3 first-line rule), FTS query construction (C-03), fingerprint/resolve (C-08), language resolution (C-05), sanitiser order and colour table (C-06.1), document theme mixes (C-06.3), math delimiters (C-07.1), rewrite table (C-07.2), section range (C-12), zoom clamps and snap (R-30), scroll-restore gate (E-08). Diverging: the math host rule (F-068), the code font size (F-065), the column width (F-067).
 
 ## 9. Edge-Case Review
 
-E-01..E-25 hold. New cases surfaced: two windows and one command (F-042); cold start with a file argument and the back stack (F-043); several URLs in one open event, several items in one drop (F-053); `####`/setext heading click (F-054); swipe-delete of the displayed row (F-050); a `$$` block matching a find query (F-048); an undecodable file that stays undecodable (F-057).
+E-01..E-26 hold as written except E-03 (F-062). New cases surfaced: empty file (shows "No file open", F-062); file deleted before a sidebar/⌘←/⌘0 selection (F-062, F-074); 101st open and the index (F-064); snapshot to a swipe-deleted row (F-063); reload with the find bar open (F-071); `mdv - x.md` (F-073); stored preference values out of range (F-070).
 
 ## 10. Non-Functional Requirement Review
 
-Unchanged: K-03..K-13 values re-verified where they are code constants (256/2048/96/192/192 MB, 0.10/0.60/2.50, 0.05 s, 0.6 s, 40 blocks, 80 chars). K-06 should gain the bookmark-title 60-character cap (F-044) and the 0.5 s transient window is already there via D-18. No time-to-first-render bound — still an accepted omission.
+K-03..K-13 constants re-verified where they are code (100, 80, 14, 5; 0.10/0.60/2.50; 180/400, 180/520, 240; 120/80; 0.05 s, 0.5 s, 0.6 s, 0.9 s, 40, 60; 36 pt, 0.5–4, 540 pt, 96/192/192 MB; 16 pt, 13 pt, 2048; 80 chars). K-13 needs the formula of F-067. No time-to-first-render bound — still an accepted omission.
 
 ## 11. Security and Trust-Boundary Review
 
-Nothing new. R-19's click-opens-anything policy is as built. The CLI installer's AppleScript-with-admin path is worth one sentence in §5.1 (F-046) because it is the only privileged operation the GUI performs.
+Nothing new in the application. In the release chain, the Makefile's default signing identity names a specific person and team (F-072); the spec should say the defaults are placeholders for the repository owner's identity.
 
 ## 12. Observability and Provenance Review
 
-R-35's inventory is incomplete but every line is `[mdv]`-prefixed (F-056). D-13 (bundle version fixed at 1.0.0) remains the provenance gap; `bin/mdv --version` therefore reports 1.0.0 for every build.
+R-35's inventory holds: the only `NSLog` sites are `Database` (`[mdv] …`, may name a path), `FontRegistration`, and `openCurrentFileInEditor`. The as-built commit pointer in the front matter is stale by one behaviour-neutral commit (F-075). D-13 (bundle version fixed at 1.0.0) remains the provenance gap.
 
 ## 13. Testing and Verification Review
 
-T-28 depends on unstated launch behaviour (F-043). T-23's "⌘G visits each" is not observable within a block (F-047). T-26/T-27 say "no-op"/"disabled" where the app beeps (F-055). T-35 does not exercise the command-routing half of multi-window (F-042). T-22 has no GitHub-dialect slug case (F-052). The suite (R-37) and harness (R-39) remain unbuilt, as §9.0 states.
+T-39 fails as written against the tree (F-062). T-24's "re-indexed on next open" is route-dependent (F-063). T-25 lacks the eviction case (F-064) and a "click an older row" step (F-063). T-11 does not name fenced code (F-065). T-18's formula is off by the padding (F-067). T-06 does not cover the non-`bash` prompt-aware fences (F-066). The suite (R-37) and harness (R-39) remain unbuilt; §9.0's target layout is unchanged and still right.
 
 ## 14. Metrics and Evaluation Review
 
-§7.1 unchanged; adequate.
+§7.1 unchanged; adequate. The K-13 formula recommended in F-067 is the only new expression this pass, and its symbols are defined at the point of use.
 
 ## 15. Traceability Review
 
-Scripted check at `fb5794b`: no id gaps (R-01..R-39, C-01..C-15, I-001..I-013, K-01..K-13, E-01..E-25, T-01..T-39, D-01..D-18), no dangling references, every I/K/E cited by a test, a §11 row for every R/C/I/K/E. §11's symbols were spot-checked and exist. §11 will need *open defect* rows again for whichever of F-042, F-045, F-051, F-052 the owner decides are code bugs.
+Id inventory at v0.5: R-01..R-40, C-01..C-15 (no C-14 gap: it lives in §5.4), I-001..I-013, K-01..K-13, E-01..E-26, T-01..T-40, D-01..D-22 — no gaps, no dangling references, every I/K/E cited by a test, a §11 row for every R/C/I/K/E. §11's symbols were spot-checked and exist, with one misleading citation (R-40 → `initialURL`, F-075). §11 will need *open defect* rows for whichever of F-062, F-064, F-065 the owner decides are code bugs, and the E-03/R-04 rows must lose their "verified" status until then.
 
 ## 16. Internal-Consistency Review
 
-Contradictions: §3.1 `EMPTY` vs the launch code and T-28 (F-043); R-01 "active window" vs the broadcast design (F-042); C-14 vs two `NSAlert`s and §5.1's "beep" (F-046); §3.3 "first ⌘? per launch" vs always-overwrite (F-058); §3.3 "same transaction" vs no transaction (F-051); C-01 `[md, markdown]` vs `Info.plist` (F-059); R-27's 40/`(empty)` vs 60/`(line n)` (F-044). Numeric agreement across sections otherwise holds.
+Spec-versus-tree contradictions: E-03/§3.1/T-39 vs `loadCurrentEntry` (F-062); §3.1 `LOADING`/R-20/R-26 vs the four direct `selectedEntry` assignments (F-063); R-26 population vs cap eviction (F-064); C-07.1 host comment vs `rewrite` (F-068); K-13 vs the modifier order (F-067). Spec-internal: §3.3 "clear" vs R-26's "no clear command"; R-30/T-11 silent on fences while C-05 fixes their size; C-12 "heading" vs C-02's TOC-heading definition. Numeric agreement across sections otherwise holds.
 
 ## 17. Architecture Review
 
-Sound for the single-window product the code was written as. The notification-broadcast command bus is the one architectural choice that contradicts the spec's per-window language; the fix (route to the key window, or adopt `@FocusedValue`/`FocusedBinding` commands) is local. The `mdvCore` split for R-37 is still the enabling change and would also give the harness (R-39) a real library to link.
+Sound. The one structural observation: `history.add` is the only place that couples "display this file" to "record and index this file", and four call sites bypass it. Introducing a single `open(entry, mode: .add | .select)` entry point in `ContentView` would make F-062/F-063/F-064 one change each and give §3.1 a code symbol to cite. The `mdvCore` split for R-37 is still the enabling change for tests.
 
 ## 18. Implementation-Agent Readiness
 
@@ -424,17 +409,17 @@ Sound for the single-window product the code was written as. The notification-br
 
 Minimum blocking questions:
 
-1. What does the application show when launched without a file — the most recent history entry (as built) or the empty drop target (§3.1)? (F-043)
-2. With two windows open, do menu commands and open events act on the key window (R-01/R-18 as written) or on every window (as built)? (F-042)
+1. When a file exists but cannot be decoded as UTF-8 (or vanishes before the read), does the load abort with the previous document kept (E-03 as written) or does the window go empty with a history row added (as built)? And what does an empty file display? (F-062)
+2. Which open routes add-or-move a history row and re-index — every route (§3.1 as written) or only ⌘O/⌘⇧O/LaunchServices/drop/link/bookmark/directory (as built)? (F-063)
 
-Non-blocking but to be recorded before claiming conformance: F-044..F-054 (pin each rule to the as-built behaviour or mark it *open defect*).
+Non-blocking but to be recorded before claiming conformance: F-064..F-068 (pin each rule to the as-built behaviour or mark it *open defect*).
 
 ## 19. Quality Scorecard
 
 | Dimension | Score |
 | --------- | ----: |
 | Scope clarity | 4 |
-| Terminology | 4 |
+| Terminology | 3 |
 | Requirement precision | 4 |
 | Interface completeness | 4 |
 | Data-contract completeness | 4 |
@@ -452,27 +437,26 @@ Non-blocking but to be recorded before claiming conformance: F-044..F-054 (pin e
 | Architecture consistency | 4 |
 | Implementation readiness | 3 |
 
-Internal consistency rises from 2 to 3: the v0.2 divergences are gone, and the new ones are narrower in scope (window/launch shell, find internals) though one of them (F-042) is as consequential. State/lifecycle drops from 4 to 3 for the two missing transitions and the wrong `EMPTY` entry.
+Terminology drops from 4 to 3 for "opened" meaning two things (F-063). Failure semantics stays at 3: the E-03 model is right but not built (F-062). All other scores are unchanged from the third pass; the surfaces they cover were re-verified rather than re-scored.
 
 ## 20. Remediation Plan
 
 ### P0 — Blocking
 
-- **F-043** — state the launch-restore rule in R-01 and fix the `EMPTY` row; add the cold-start-with-argument case to a test.
-- **F-042** — decide key-window routing (open defect) or single-window scope (respecify); either way add an E row and a T step.
+- **F-062** — mark E-03/R-04 *open defect* (decode in `loadFile` before `history.add`) or respecify; state what an empty file displays; extend T-39 and add the sidebar/⌘←/⌘0-to-missing-file case.
+- **F-063** — split add routes from select routes in R-01 and §3.1; reword R-20 ("most recently added first") and R-26 ("on add and on launch"); decide the deleted-row snapshot rule; add T-25/T-24 steps.
 
 ### P1 — Important
 
-- **F-044**, **F-054** — pin R-27's title rule and R-22's "heading block" to the code.
-- **F-045**, **F-052** — decide GitHub-compatibility for `_emph_` stripping and hyphen-adjacent slugs; mark *open defect* or respecify; add T cases.
-- **F-046** — narrow C-14; fix the §5.1 CLI-install row.
-- **F-047**, **F-048** — restate R-24/E-17 as built (count on source, highlight on rendered text, exclusion list), or mark *open defect* for per-occurrence focus and `$$` tinting.
-- **F-049**, **F-050**, **F-053** — enumerate which jumps push a snapshot; add the delete-current-row transitions; define multi-URL/multi-drop.
-- **F-051** — wrap `migrate()` in a transaction (open defect) or reword §3.3.
+- **F-064** — prune the index on eviction (open defect) or narrow R-26; add the 101-file search step to T-25.
+- **F-065** — decide whether fences zoom; state it in R-30 and T-11; if they should, mark open defect with the cache-key note.
+- **F-066** — add the prompt-aware fence set to C-05.
+- **F-067** — replace K-13's sentence with the formula; fix T-18's expected width.
+- **F-068** — correct C-07.1's host rule and K-08's mode rule.
 
 ### P2 — Improvement
 
-- **F-055..F-061** — editorial and inventory corrections.
+- **F-069..F-075** — one clause each; move the as-built commit pointer with each version.
 
 ## 21. Final Verdict
 
@@ -484,8 +468,8 @@ Implementation readiness:
 READY WITH MINOR FIXES
 
 Primary blocker:
-The launch and multi-window shell is specified from a single-window mental model the code does not fully share — a no-argument launch reopens the last file (§3.1 says EMPTY, F-043) and every command reaches every window (R-01 says the active one, F-042).
+The loading path is specified from intent, not from the code — an undecodable file is meant to abort the load (E-03) but as built gets a history row and an empty window (F-062), and three of the open routes never add a row or re-index although §3.1 says every load does (F-063).
 
 Most important improvement:
-Pin the eleven MEDIUM rules (bookmark title, heading-block definition, find count-vs-highlight, snapshot policy, delete-current-row, slug hyphens, _emph_ stripping, migration transaction, C-14 modality, multi-URL open) to the as-built behaviour or to an open-defect marker, so that the next pass finds nothing left to verify by reading code.
+Give ContentView one open(entry, mode:) entry point that §3.1 can cite, split the LOADING row into add and select routes, and pin the five MEDIUM rules (index eviction, fence zoom, prompt-aware fences, column-width formula, $$ host) so that the fifth pass has no loading-path claim left to verify by reading code.
 ```
