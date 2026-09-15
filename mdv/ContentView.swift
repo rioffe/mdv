@@ -326,6 +326,7 @@ struct ContentView: View {
         .environment(\.openURL, OpenURLAction { url in handleLinkClick(url) })
         .background(WindowAccessor { window in
             applyThemeToWindow(window)
+            DocumentWindows.register(window)
             if hostWindow !== window { hostWindow = window }
         })
         .onChange(of: themes.current.id) { _ in

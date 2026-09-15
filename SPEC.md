@@ -628,7 +628,7 @@ Statuses: a plain row is realised and verified as written; *not yet realised* ma
 
 | Spec id | Where realized | Verified by |
 | ------- | -------------- | ----------- |
-| R-01 | `mdvApp.swift` (menus post via `NotificationCenter.postToKeyWindow`, `application(_:open:)` addresses `NSApp.keyWindow ?? windows.first`; the target rides in `userInfo[Notification.targetWindowKey]`), `NotificationHandlers.addressedToMe` (each `ContentView` captures its `hostWindow` via `WindowAccessor` and drops notifications addressed elsewhere), `ContentView.loadFile` (adding) / `select` (selecting); multi-URL order via `loadFile` per URL (F-042 fixed) | T-03, T-04, T-22, T-24, T-26, T-40 |
+| R-01 | `mdvApp.swift` (menus post via `NotificationCenter.postToKeyWindow`, `application(_:open:)` addresses `DocumentWindows.frontmost` — the key window if it hosts a `ContentView`, else the frontmost registered document window in z-order, since `NSApp.keyWindow` is nil while the app is inactive; the target rides in `userInfo[Notification.targetWindowKey]`), `NotificationHandlers.addressedToMe` (each `ContentView` captures its `hostWindow` via `WindowAccessor` and drops notifications addressed elsewhere), `ContentView.loadFile` (adding) / `select` (selecting); multi-URL order via `loadFile` per URL (F-042 fixed) | T-03, T-04, T-22, T-24, T-26, T-40 |
 | R-02 | `ContentView.loadDirectory` | T-04 |
 | R-03 | `ContentView.handleDrop` | T-04 |
 | R-04 | `ParsedDocument`; `ContentView.readDocument` (the one read-and-decode), `loadFile`/`loadDirectory`/`select` decode into `preloadedContent` before touching history or the selection, `loadCurrentEntry` consumes it; `markdownView` shows `emptyState` only when `selectedEntry == nil` (F-062 fixed) | T-30, T-39, I-004 |

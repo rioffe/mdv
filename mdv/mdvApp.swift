@@ -191,7 +191,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // at a cold start) via an addressed notification, instead of
         // letting SwiftUI spawn new windows (SPEC R-01, E-26). The
         // ContentView listens for `.openURLInWindow` and calls loadFile.
-        let target = NSApp.keyWindow ?? NSApp.windows.first
+        // `NSApp.keyWindow` is nil while the app is inactive (the usual case
+        // for `open -a` from a terminal or a Finder double-click), and
+        // `NSApp.windows` holds SwiftUI's hidden helper windows too — so
+        // address the frontmost *document* window in z-order.
+        let target = DocumentWindows.frontmost
         for url in urls {
             NotificationCenter.default.post(name: .openURLInWindow, object: url, userInfo: Notification.targetInfo(target))
         }
@@ -199,6 +203,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             target.makeKeyAndOrderFront(nil)
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// The windows that host a `ContentView`, registered by `WindowAccessor`
+/// as each one attaches, so open events can be addressed to a document
+/// window rather than to whatever `NSApp.windows.first` happens to be.
+enum DocumentWindows {
+    private static let table = NSHashTable<NSWindow>.weakObjects()
+
+    static func register(_ window: NSWindow) { table.add(window) }
+
+    static func contains(_ window: NSWindow) -> Bool { table.contains(window) }
+
+    /// The key window when it is a document window; otherwise the
+    /// frontmost registered window (`orderedWindows` is front-to-back).
+    static var frontmost: NSWindow? {
+        if let key = NSApp.keyWindow, contains(key) { return key }
+        return NSApp.orderedWindows.first(where: { contains($0) && $0.isVisible })
+            ?? NSApp.windows.first(where: contains)
     }
 }
 
@@ -220,7 +243,7 @@ extension NotificationCenter {
     /// Post a menu command addressed to the key window, so that with several
     /// windows open only the one the reader is looking at acts (SPEC E-26).
     func postToKeyWindow(_ name: Notification.Name, object: Any? = nil) {
-        post(name: name, object: object, userInfo: Notification.targetInfo(NSApp.keyWindow))
+        post(name: name, object: object, userInfo: Notification.targetInfo(DocumentWindows.frontmost))
     }
 }
 
