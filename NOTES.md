@@ -153,3 +153,23 @@ after it, no bare `$` inside, and a span never crosses a backtick. So
 "$5 and $10", "$5-$10", `\$`, and `$HOME` in code all stay literal.
 `ParsedDocument.parseBlocks` treats an unclosed `$$` line like a code fence
 so blank lines inside a display block don't split it.
+
+## Block splitter and file watcher (2026-09-14, from the SPEC review)
+
+**CRLF.** `ParsedDocument.parseBlocks` tests blank lines with
+`trimmingCharacters(in: .whitespaces)`, and `CharacterSet.whitespaces` does
+not contain `\r`, so a CRLF file never split — the whole document was one
+block (one TOC entry, find tinting everything, every bookmark at block 0).
+Fixed by normalising `\r\n`/`\r` → `\n` before splitting. Gotcha: Swift's
+`String.contains("\r")` is *false* for a string containing `"\r\n"`, because
+`"\r\n"` is a single grapheme cluster; Foundation's
+`replacingOccurrences` works on UTF-16 and does see it. Don't guard the
+normalisation with `contains`.
+
+**Reload on a failed read.** The watcher callback used
+`(try? String(contentsOfFile:)) ?? ""`, so deleting or moving the file, or
+catching a save mid-write, blanked the page. It now keeps the page on a
+failed read, and treats a zero-byte read as a truncate-then-write save in
+progress: it re-reads after 0.5 s and only then shows an empty file
+(SPEC E-21, D-18).
+

@@ -2752,12 +2752,33 @@ struct ContentView: View {
         fileWatcher.watch(path: watchedPath) {
             // Still on the same entry? Re-read from disk.
             guard let current = self.selectedEntry, current.path == watchedPath else { return }
-            let fresh = (try? String(contentsOfFile: watchedPath, encoding: .utf8)) ?? ""
+            // A failed read — file deleted, moved away, or a half-written
+            // save that isn't valid UTF-8 yet — keeps the page as it is. The
+            // watcher is path-based, so a re-creation or the finished write
+            // fires again and lands normally.
+            guard let fresh = try? String(contentsOfFile: watchedPath, encoding: .utf8) else { return }
+            if fresh.isEmpty && !self.rawMarkdown.isEmpty {
+                // Zero bytes right after a change event is almost always an
+                // editor's truncate-then-write save caught mid-flight. Hold
+                // the current page and look again after the transient window;
+                // a file that is still empty then really is empty.
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.transientReadWindow) {
+                    guard let cur = self.selectedEntry, cur.path == watchedPath,
+                          let again = try? String(contentsOfFile: watchedPath, encoding: .utf8),
+                          again != self.rawMarkdown else { return }
+                    self.rawMarkdown = again
+                }
+                return
+            }
             if fresh != self.rawMarkdown {
                 self.rawMarkdown = fresh
             }
         }
     }
+
+    /// How long an empty read after a change event is treated as a
+    /// save-in-progress rather than a genuinely empty file (SPEC E-21, D-18).
+    private static let transientReadWindow: TimeInterval = 0.5
 
     /// Persist the current scroll anchor for `entry`. Reads
     /// `topVisibleBlock` (== `visibleBlocks.min()`). `visibleBlocks` is
@@ -2847,7 +2868,17 @@ fileprivate struct ParsedDocument: Equatable {
         var result: [String] = []
         var current: [String] = []
         var fenceMarker: String? = nil  // nil → outside, "```" / "~~~" / "$$" → inside
-        let lines = raw.components(separatedBy: "\n")
+        // Normalise line endings first. `CharacterSet.whitespaces` doesn't
+        // include `\r`, so a CRLF blank line ("\r") never read as blank and
+        // a Windows-authored file collapsed into a single block — one TOC
+        // entry, find tinting the whole page, every bookmark at block 0.
+        // (Foundation's `replacingOccurrences` works on UTF-16 and sees the
+        // `\r` inside a `\r\n` grapheme cluster; Swift's `String.contains`
+        // does not — "\r\n" is one Character — so there is no cheap guard.)
+        let normalized = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
 
         func flush() {
             let joined = current.joined(separator: "\n")
