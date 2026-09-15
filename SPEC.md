@@ -1,6 +1,6 @@
 # SPECIFICATION — mdv (Markdown viewer, native macOS GUI + CLI launcher, Swift/SwiftUI)
 
-> - **Status:** v0.3 — as-built specification of the system at commit `a6feb14` (branch `main`); reviewed twice (`SPEC_REVIEW_REPORT.md`; F-001..F-041 applied). *As-built* means every normative row is true of the tree at that commit **except** rows whose §11 status is *not yet realised* (feature never built) or *open defect* (the code violates the row; an issue is filed). Rows are never weakened to match a defect.
+> - **Status:** v0.4 — as-built specification of the system at commit `HEAD` after the F-033/F-034 fixes (branch `main`); reviewed twice (`SPEC_REVIEW_REPORT.md`; F-001..F-041 applied). *As-built* means every normative row is true of the tree at that commit **except** rows whose §11 status is *not yet realised* (feature never built) or *open defect* (the code violates the row; an issue is filed). Rows are never weakened to match a defect.
 > - **Language / stack:** Swift 5.9 (SwiftPM, no Xcode project) | SwiftUI + AppKit | MarkdownUI 2.4.1 (cmark-gfm) · SwiftTreeSitter 0.8 + nine vendored tree-sitter grammars · beautiful-mermaid-swift 1.0.4 (ELK layout) · SwiftMath 1.7.3 (vendored, patched) · SQLite (FTS5) | surfaces: macOS app bundle, `bin/mdv` shell launcher, `make` targets
 > - **Sources:** `README.md`; `mdv/Help.md` (user-facing behaviour); `NOTES.md` (library gaps and their work-arounds); `TYPOGRAPHY.md` (theme conventions); `plans/CODEVIEW.md` (code-block design); `Vendor/SwiftMath/README.md`; the implementation in `mdv/*.swift`, `bin/mdv`, `build.sh`, `Makefile`, `Package.swift`, `.github/workflows/build.yml`; git history through `a6feb14`
 > - **Scope of this document:** the observable behaviour of the mdv application and its launcher — file opening, rendering (Markdown, code, Mermaid, LaTeX), navigation, find and search, history, bookmarks, persistence, theming, packaging and release. It does **not** specify the internals of the third-party renderers beyond the contracts mdv relies on, nor the visual design values of individual themes (those live in `TYPOGRAPHY.md`).
@@ -203,7 +203,7 @@ Split rules (normative):
 3. A line whose first non-space characters are `$$`, with no second `$$` on the same line, opens a **math fence**; it closes at the next line *containing* `$$`, or at the end of the input.
 4. Indented code blocks (four spaces) are **not** recognised by the splitter: a blank line inside one splits it into two blocks (E-23).
 5. Leading/trailing newlines of a block are trimmed; empty blocks are dropped.
-6. Line endings are normalised before splitting: `\r\n` and lone `\r` MUST be treated as `\n`, so a CRLF document yields the same blocks and TOC as its LF equivalent. *Open defect* — see §11 (as built, a CRLF blank line is not recognised and the whole file becomes one block).
+6. Line endings are normalised before splitting: `\r\n` and lone `\r` MUST be treated as `\n`, so a CRLF document yields the same blocks and TOC as its LF equivalent.
 7. `tocHeadings` contains each block whose trimmed text starts with `# `, `## `, or `### ` and is not a fence, using its first line only. `text` is the line with inline Markdown stripped (C-12 rules) and math converted per C-07.3; `slugText` is the same without the math conversion.
 
 ### C-03 Full-text index
@@ -496,7 +496,7 @@ I-009 holds when $\mathrm{ink}(P_{\mathrm{node}}) \geq 0.9 \cdot \mathrm{ink}(P_
 | **E-18** | ⌘F while the history sidebar has focus. | Routes to global search (R-24), not the document find bar. |
 | **E-19** | Reload of the current file while text is selected. | Scroll position kept; the text selection is not preserved. |
 | **E-20** | Same file opened in two windows and edited on disk. | Each window's watcher reloads independently; scroll positions are per path, last writer wins. |
-| **E-21** | The displayed file is deleted, replaced by an atomic-rename save, or read mid-save as empty / not UTF-8. | Rename: reload with the new content (R-05). Delete without re-creation, or an empty/undecodable read within 500 ms of a prior change event: content and scroll position kept, no error, watch stays armed; a later re-creation or completed write reloads. An empty file that stays empty past 500 ms is shown as empty. *Open defect* — see §11. |
+| **E-21** | The displayed file is deleted, replaced by an atomic-rename save, or read mid-save as empty / not UTF-8. | Rename: reload with the new content (R-05). Delete without re-creation, or an empty/undecodable read within 500 ms of a prior change event: content and scroll position kept, no error, watch stays armed; a later re-creation or completed write reloads. An empty file that stays empty past 500 ms is shown as empty. |
 | **E-22** | `#fragment` whose target is an h4–h6 heading or a setext (`===`/`---`) heading. | No-op — only `#`–`###` single-line ATX headings are targets (C-02, D-17). |
 | **E-23** | Fence closed by a longer/shorter backtick run than the opener; a fenced block that is never closed; an indented (four-space) code block containing a blank line. | Splitter semantics of C-02 (fence, math-fence, and indented-code rules): closes on any run of the same three-character marker; runs to end of input; the indented block is split into two blocks and renders as two. |
 | **E-24** | An empty or whitespace-only global search query. | No search is performed; the results list is empty (C-03). |
@@ -567,7 +567,7 @@ Prerequisites for the unit group: `Database.databaseURL` becomes injectable; the
 | **T-26** | Hover a paragraph and ⌘D: the bookmark anchors there, titled by the preceding heading; ⌘D with the pointer outside the document anchors the topmost visible block; ⌘D on the same block twice yields two rows. Then ⌘D at a section and edit the file to insert a paragraph above it: ⌘1 still lands on the section (fingerprint); delete the section entirely: ⌘1 lands at the clamped index. Delete the file: the bookmark row is marked missing and ⌘1 is a no-op. A bookmark whose heading exceeds 80 characters still resolves after an edit beyond the 80th character. Proves R-27, C-08, E-08, E-09, K-09. |
 | **T-27** | ⌘⇧0, scroll away, ⌘0 returns; relaunch: ⌘0 is disabled. Proves R-28. |
 | **T-28** | Scroll to the middle, quit, relaunch: same position. Then modify the file externally and relaunch: top of document. Scroll, open another file from the sidebar, return via the sidebar: the position is restored. Proves R-06, C-08, E-08, K-06. |
-| **T-29** | With the file open, save it from an editor five times within 50 ms (script): one reload, scroll position kept. Save via `mv tmp file` (atomic rename): reloads. `rm file`: content stays, no error; re-create it: reloads. Truncate the file to zero bytes and write it back 100 ms later: no blank frame is shown. Leave it empty for 1 s: the page shows empty. Proves R-05, K-06, E-19, E-21 (currently an open defect, F-034). |
+| **T-29** | With the file open, save it from an editor five times within 50 ms (script): one reload, scroll position kept. Save via `mv tmp file` (atomic rename): reloads. `rm file`: content stays, no error; re-create it: reloads. Truncate the file to zero bytes and write it back 100 ms later: no blank frame is shown. Leave it empty for 1 s: the page shows empty. Proves R-05, K-06, E-19, E-21. |
 | **T-30** | Single-click a heading: the section flashes and the pasteboard holds its Markdown source ending at the next same-or-higher heading; click again: it flashes again; ⇧-click behaves the same. Drag across a paragraph: text is selected and ⌘C pastes rendered text; dragging on a heading selects nothing. Throughout, the TOC row, find match, and bookmark for one paragraph all address the same block index. Proves R-22, C-12, I-004. |
 | **T-31** | Drag the inspector's left edge to 520 pt and 180 pt (clamps), relaunch: width kept; drag the sidebar divider: clamps at 180/400. Proves R-20, R-21, K-04. |
 
@@ -580,7 +580,7 @@ Prerequisites for the unit group: `Database.databaseURL` becomes injectable; the
 | **T-34** | `diff -r` between `Vendor/SwiftMath/Sources` and upstream v1.7.3 `Sources/SwiftMath` shows only the files and hunks listed in `Vendor/SwiftMath/README.md`. Proves I-011. |
 | **T-35** | Open a document while the same path is open in a second window, edit it on disk: both windows reload. Proves E-20. |
 | **T-38** | Choose an editor via File → Edit → Choose Editor…, ⌘E: the file opens there; Forget Editor, ⌘E: the chooser appears. ⌘?: Help opens, `~/Library/Application Support/mdv/Help.md` exists, and ⌘D inside it creates a bookmark with that path. Proves R-23, R-31. |
-| **T-39** | Fence edge cases (E-23): a ` ```` ` block containing a ` ``` ` line, an unclosed fence at EOF, and an indented code block with a blank line render per C-02's fence, math-fence, and indented-code rules (documented deviations included). The same file with CRLF line endings produces the same block count and TOC as the LF version (C-02 line-ending rule; currently an open defect, F-033). A file saved as ISO-8859-1 with accented characters does not open and the window keeps its previous document (E-03, D-16). Proves C-02, E-03, E-23. |
+| **T-39** | Fence edge cases (E-23): a ` ```` ` block containing a ` ``` ` line, an unclosed fence at EOF, and an indented code block with a blank line render per C-02's fence, math-fence, and indented-code rules (documented deviations included). The same file with CRLF line endings produces the same block count and TOC as the LF version (C-02 line-ending rule). A file saved as ISO-8859-1 with accented characters does not open and the window keeps its previous document (E-03, D-16). Proves C-02, E-03, E-23. |
 | **T-36** | Grep the built binary's log output during T-05..T-31 (`log stream --process mdv`): no line contains document text, a query string, or a path, except the `[mdv]` failure message and lines beginning `"mathFonts bundle resource:` (the SwiftMath font-registration lines R-35 permits). Proves R-35, I-003. |
 
 ## 10. Dependencies and environment
@@ -603,7 +603,7 @@ Environment variables: `MDV_APP` (launcher bundle override). Runtime files: `~/L
 
 ## 11. Traceability matrix (id → where realized)
 
-Statuses: a plain row is realised and verified as written; *not yet realised* marks a requirement for which no code exists (R-37, R-38, R-39); **open defect** marks a row the code currently violates, with the finding id and the intended fix — the row stands, the code is wrong.
+Statuses: a plain row is realised and verified as written; *not yet realised* marks a requirement for which no code exists (R-37, R-38, R-39); **open defect** marks a row the code currently violates, with the finding id and the intended fix — the row stands, the code is wrong. (None at v0.4.)
 
 | Spec id | Where realized | Verified by |
 | ------- | -------------- | ----------- |
@@ -611,7 +611,7 @@ Statuses: a plain row is realised and verified as written; *not yet realised* ma
 | R-02 | `ContentView.loadDirectory` | T-04 |
 | R-03 | `ContentView.handleDrop` | T-04 |
 | R-04 | `ParsedDocument` | T-30, I-004 |
-| R-05 | `FileWatcher` (FSEvents on the parent directory), `ContentView` watcher hookup — **open defect** for the delete/transient clause (see E-21) | T-29 |
+| R-05 | `FileWatcher` (FSEvents on the parent directory), `ContentView` watcher hookup (delete/transient clause per E-21) | T-29 |
 | R-06 | `ContentView.persistScrollPosition` (close, quit, file switch) / restore in `loadCurrentEntry`, `Database.scroll_positions` | T-28 |
 | R-07 | MarkdownUI via `ThemeManager.markdownTheme` | T-05 |
 | R-08 | `CodeRenderer`, `CodeBlockChrome` | T-06 |
@@ -648,13 +648,13 @@ Statuses: a plain row is realised and verified as written; *not yet realised* ma
 | R-39 | *not yet checked in* — `tools/render-harness/`, `test-docs/mermaid/` | T-13, T-17, T-19 |
 | C-15 | `HistoryEntry` (`Codable`), `HistoryManager.save/load` | T-25 |
 | K-13 | `ContentView.markdownView` frame/padding | T-18 |
-| E-21 | `FileWatcher` (FSEvents, path-based) — **open defect**: the reload callback assigns `""` on a failed read (F-034, fix: keep `rawMarkdown` on read failure; ignore empty/undecodable reads within 500 ms of a prior event) | T-29 |
+| E-21 | `FileWatcher` (FSEvents, path-based); the reload callback keeps the page on a failed read and re-checks a zero-byte read after `transientReadWindow` (0.5 s) (F-034 fixed) | T-29 |
 | E-22 | `ParsedDocument.parseTOC` (h1–h3 only), `scrollToFragment` | T-22 |
 | E-23 | `ParsedDocument.parseBlocks` | T-39 |
 | E-24 | `Database.makeFTSQuery` / search UI | T-24 |
 | E-25 | `.task(id:)` cancellation in the diagram/math views | T-13 (switch documents mid-scan) |
 | C-01 | `mdv/Info.plist`, `mdv.entitlements`, `build.sh` | T-01 |
-| C-02 | `ParsedDocument.parseBlocks/parseTOC` — **open defect** for the line-ending rule (CRLF never splits; F-033, fix: normalise `\r\n`/`\r` before splitting) | T-07, T-30, T-39 |
+| C-02 | `ParsedDocument.parseBlocks/parseTOC` (line endings normalised before splitting; F-033 fixed) | T-07, T-30, T-39 |
 | C-03 | `Database.migrate/_indexFile/_search/makeFTSQuery` | T-24 |
 | C-04 | `@AppStorage` declarations | T-11, T-21, T-31 |
 | C-05 | `CodeRenderer.SupportedLanguage.resolve/highlight` | T-06 |
@@ -736,5 +736,6 @@ Statuses: a plain row is realised and verified as written; *not yet realised* ma
 *Revision history*
 
 - *v0.1 (2026-09-14): first as-built draft, covering the tree at `a6feb14`; §3.2 diagram made vertical; R-37 and §9.0 added after D-01 was confirmed (automated suite is a product requirement); R-38 (Swift and SQL highlighting) and D-15 added.*
+- *v0.4 (2026-09-14): F-033 (CRLF block splitting) and F-034 (reload on a failed/transient read) fixed in the code; their *open defect* markers removed from C-02, E-21, R-05, T-29, T-39 and §11.*
 - *v0.3 (2026-09-14): second review applied (F-032..F-041). P0: R-22 rewritten to the as-built heading-click model — the block-selection model it described was removed in `c50817a`; its traces purged from R-05, §3.1, §5.1, E-19, I-004, T-30, §11. P1: *open defect* status introduced in the front matter and §11 (F-036) and applied to the CRLF line-ending rule (C-02 rule 6, F-033) and the delete/transient reload rule (R-05/E-21, F-034); transient-state rule and D-18 (F-037). P2: K-13 drag handles, blank line before §3, §9.0 wording, rule citations by name (F-038..F-041). No ids renumbered.*
 - *v0.2 (2026-09-14): all findings of `SPEC_REVIEW_REPORT.md` applied. P0: F-001 (lifecycle vs E-03). P1: F-002 (*Copy Without Prompts* output), F-003 (path-based watcher, E-21), F-004 (bookmark anchor and title), F-005..F-008, F-010..F-012, F-015 (interaction rules made explicit), F-009 (C-15 history JSON), F-016 (R-39 harness + corpus in-repo), F-017 (§7.1 ink metric). P2: F-013 (E-22, D-17), F-014 (colour list enumerated), F-018 (D-16), F-019 (C-02 rules 2–4, E-23), F-020..F-031 (editorial, notation, K-13 column width, E-24, E-25, T-38, T-39). No ids renumbered.*
