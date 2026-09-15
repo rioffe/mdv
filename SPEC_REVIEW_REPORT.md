@@ -1,475 +1,610 @@
 # Specification Review Report
 
-> - **Subject:** `SPEC.md` v0.5 — mdv (Markdown viewer, native macOS GUI + CLI launcher)
-> - **Reviewed at:** commit `a255106` (HEAD of `main`), 2026-09-14 — fourth pass, after F-001..F-061 were applied. The spec's front matter still names `fb5794b`; the one code commit since (`112fcaf`) is behaviour-neutral (see F-075).
-> - **Method:** four passes per the `spec-review` skill. As in the previous passes, every precise behavioural claim not yet checked was verified against the cited implementation by reading the code; nothing was run. Surfaces swept this time: file loading (`loadFile`, `loadDirectory`, `loadCurrentEntry`), the history manager and FTS index lifecycle, the sidebar/search-hit/back-stack selection paths, the placeholder, zoom and the code renderer, the Mermaid sanitiser and document theme, the math URL contract, the launcher script, the Makefile and CI. Finding ids continue from F-062; F-001..F-061 are listed as resolved in §3 and not re-argued.
+> - **Subject:** `SPEC.md` v0.7 — mdv (Markdown viewer, native macOS GUI + CLI launcher)
+> - **Method:** four-pass review under the `spec-review` rubric: comprehension, local precision, cross-consistency, and implementation simulation.
+> - **Review boundary:** `SPEC.md` is treated as the source of truth. This review assesses the specification, not whether the current Swift implementation conforms to it.
+> - **Finding lineage:** F-001 through F-075 are recorded by the specification as applied. New findings continue at F-076.
 
 ## 1. Executive Summary
 
-v0.5 closed the third pass as intended: R-40 and the §3.1 entries now describe the real first screen, the five *open defect* markers (F-042, F-045, F-048, F-051, F-052) are in §11 with a stated fix each, and the MEDIUM rules of the third pass (bookmark title, "TOC heading block", find count-vs-highlight, snapshot policy, delete-current-row, multi-URL open) read as the code behaves. The renderer contracts (§4), the §7.1 metric, the launcher (§5.2), the build chain (§5.3, C-13) and CI were re-verified line by line and hold.
+`SPEC.md` is **Level 2 — Implementable**, but **not ready for an implementation or conformance claim without material clarification**. It has unusually strong breadth: explicit actors and scope, detailed renderer contracts, a normative lifecycle table, measurable formulas, extensive edge cases, acceptance scenarios, and a dense implementation/test traceability matrix.
 
-This pass swept the last surface that had not been read against the code — **how a document gets loaded and how history and the index follow it** — and found the same class of defect as the earlier passes, in two places that matter and five that are smaller:
+This review found **18 new findings: 0 CRITICAL, 7 HIGH, 9 MEDIUM, and 2 LOW**. The main weaknesses are concentrated rather than systemic:
 
-1. **An unreadable-as-UTF-8 file is not refused.** `loadFile` guards only existence and permission; the UTF-8 decode happens later in `loadCurrentEntry`, whose failure branch sets `rawMarkdown = ""`. Result: the history row is added and selected, the watcher is armed, the index skips the file silently, and the window shows the "No file open" drop target — not the previous document. R-04, E-03, §3.1, D-16 and T-39 all say the opposite, and §11 lists E-03 as verified. The same branch is reached when a sidebar row, ⌘← or ⌘0 targets a file deleted since, and by any genuinely empty file.
-2. **Three open routes do not add a history row.** Selecting a sidebar row, choosing a search hit already in history, and ⌘←/⌘→ assign `selectedEntry` directly, so the row is not moved to the top and the file is not re-indexed; §3.1 `LOADING` says every entry adds a row and indexes, R-20 says "most recent first", and T-24's "re-indexed on next open" only holds for the routes that go through `history.add`. ⌘← can also display an entry that was swipe-deleted, with no sidebar row.
+- launch and navigation rules conflict at three state boundaries;
+- the remote-image exception contradicts a security invariant;
+- the absolute no-crash promise lacks resource-exhaustion semantics;
+- the release tag gate has a documented bypass;
+- the required render harness is named but not specified as a reproducible CLI;
+- several otherwise strong algorithms and acceptance checks omit one decisive boundary or tie rule.
 
-The MEDIUM findings are rules an implementer would otherwise guess: the FTS index keeps files evicted by the 100-entry cap (R-26's "exactly the current history" is false after the 101st file); fenced code blocks do not zoom (R-30 is silent, T-11 implies they do); "shell language" for *Copy Without Prompts* is an undocumented six-name set; K-13's column-width formula applies the 860 pt cap before subtracting the padding, not after; and a mid-line `$$…$$` is emitted with the `display/` host and typeset in display style, where C-07.1 says `inline/`.
-
-- **Maturity:** Level 2 — the same one-fix-away position as v0.4, on a different surface.
-- **Readiness:** READY WITH MINOR FIXES.
-- **Findings this pass:** 0 CRITICAL · 2 HIGH · 5 MEDIUM · 7 LOW (14). Cumulative: 75, of which 61 resolved.
-- **Strengths:** §4 contracts and §5.2/§5.3 match the tree exactly; the *open defect* convention is used consistently; the §3.1 table is now the right shape and only needs its `LOADING` row split.
-- **Weaknesses:** the loading path was specified from the E-03 intent ("unreadable → abort") rather than from `loadFile`/`loadCurrentEntry`; "opened" is used in R-20/R-26/§3.1 for two different things (adding a row vs. selecting one).
+The specification remains substantially stronger than a typical design document. Resolving the seven HIGH findings and aligning the affected tests would move it close to Level 3.
 
 ## 2. Overall Maturity
 
-**Level 2 — Implementable.** A coding agent building from v0.5 would refuse a Latin-1 file (spec) where the app shows an empty window with a new history row (code), and would move a sidebar-selected file to the top of history and re-index it (spec) where the app leaves both alone (code). Both are common paths a verifier hits in the first hour (T-24, T-25, T-39). Each is a sentence plus a status marker away; with F-062/F-063 resolved and the five MEDIUM rules pinned, the document meets the Level 3 bar. Nothing found this pass touches the renderer, persistence schema, or packaging.
+**Level 2 — Implementable.** A competent engineer can build most of mdv directly from the contracts. However, two competent implementations can still diverge materially on startup, back-stack contents, remote network behavior, release eligibility, resource exhaustion, and render-harness behavior. Those differences are user-visible or determine whether conformance can be tested.
+
+The document does not meet Level 3 while T-28 explicitly records an observation instead of an expected result, R-40 conflicts with the lifecycle failure path, and R-39 lacks enough CLI semantics to reproduce its own cited acceptance checks.
 
 ## 3. Findings Summary
 
-### Resolved from earlier passes
-
-F-001..F-061 — all applied (see `SPEC.md` revision history). Spot-checked this pass: F-043 (R-40 and the `EMPTY`/`LOADING` entries match `ContentView.onAppear`, `mdv/ContentView.swift:522-532`), F-044 (`bookmarkTitle` 40/60/`(line n)`), F-049/F-050 (`pushSameDocSnapshot` callers; `delete(_:)` selects `history.entries.first`, `mdv/ContentView.swift:953-959`), F-053 (`application(_:open:)` posts one notification per URL in order; `handleDrop` takes `providers.first`), F-055 (Back/Forward never disabled; `jumpToPlaceholder` beeps), F-057 (`kFSEventStreamCreateFlagNoDefer`, latency `0.05`), F-058 (`HelpManager` overwrites), F-060 (`localizedCaseInsensitiveCompare`, `skipsHiddenFiles`, `isReadableFile`).
-
-### New in v0.5
-
 | ID | Severity | Location | Title |
 | -- | -------- | -------- | ----- |
-| F-062 | HIGH | R-04, E-03, §3.1, D-16, T-39, §11 | A file that exists but is not UTF-8 (or vanishes before the read) gets a history row and an empty window, not an aborted load |
-| F-063 | HIGH | §3.1 `LOADING`, R-01, R-20, R-26, R-18, T-24, T-25 | Sidebar row, search hit and ⌘←/⌘→ select an entry without adding a history row or re-indexing |
-| F-064 | MEDIUM | R-26, I-013, K-03, T-25 | Files evicted by the 100-entry cap stay in the full-text index |
-| F-065 | MEDIUM | R-30, C-05, T-11 | Fenced code blocks do not scale with ⌘=/⌘-; the spec is silent |
-| F-066 | MEDIUM | R-08 | "Shell language" for *Copy Without Prompts* is undefined; as built it is `bash sh zsh fish shell console` on the raw fence word |
-| F-067 | MEDIUM | K-13, R-11, T-18 | Column width: `articleMaxWidth` caps the padded frame, so the content width is $860 - 2 \cdot 40 - 2 \cdot 6$ pt, not 860 |
-| F-068 | MEDIUM | C-07.1, K-08, E-16 | A mid-line `$$…$$` is emitted with the `display/` host and typeset in `.display` mode; C-07.1 says `inline/` |
-| F-069 | LOW | R-06, R-26, C-08 | Swipe-deleting a history row also deletes the path's scroll position |
-| F-070 | LOW | C-04, R-29, R-30, K-06 | Stored-value edge cases: zoom is snapped to one decimal on step, an unknown theme id resolves to `high-contrast` but stays selected, index mtime compares whole seconds |
-| F-071 | LOW | R-24, R-05 | Find state across a live reload is recomputed and the current occurrence resets to the first; the query is matched untrimmed |
-| F-072 | LOW | §5.3, §10, §1 | Release-engineer inputs (`CERT_NAME`, `TEAM_ID`, `NOTARY_PROFILE`, `NOTES_FILE`, `VERSION`) are not in the spec |
-| F-073 | LOW | §5.2, R-33 | `mdv -` only as the sole argument; the first missing argument stops the loop; `--help`/`--version` still need a located bundle |
-| F-074 | LOW | R-28, R-18, E-09 | ⌘0 or ⌘← to a file that no longer exists: silent no-op (⌘0) or empty window (⌘←), where a bookmark beeps |
-| F-075 | LOW | front matter, §3.3, §11, C-06.1, C-07.2, C-12 | Editorial: stale as-built commit, "clear" in §3.3, `initialURL` citation, unstarred `\operatorname`, "next heading" in C-12, colour-name prefix rule |
+| F-076 | HIGH | R-40, §3.1, E-03, Figure 3.1, T-28 | Launch with an unreadable history head has contradictory terminal state |
+| F-077 | HIGH | R-40, R-18, T-28, §11 | Cold-start file arguments leave back-stack behavior unresolved |
+| F-078 | HIGH | R-18, R-27, R-28, T-22, T-27 | Cross-file bookmark and placeholder jumps conflict with the general push rule |
+| F-079 | HIGH | §0 trust boundary, R-16, I-001, I-003 | Remote-image fetching contradicts the no-network-content invariant |
+| F-080 | HIGH | §0 trust boundary, R-16, R-36, I-002, E-11 | The no-crash guarantee has no resource-exhaustion contract |
+| F-081 | HIGH | §1 release actor, R-34, §5.3, K-11, T-02 | The release tag gate can be bypassed by `VERSION` |
+| F-082 | HIGH | R-39, §9.0, T-13, T-17, T-19 | The required render harness is not specified as an executable contract |
+| F-083 | MEDIUM | R-01, R-20, I-013, T-25 | History recency invariant contradicts selecting-route behavior |
+| F-084 | MEDIUM | R-11, K-07, §7.2, T-18 | Mermaid width formulas disagree at narrow widths |
+| F-085 | MEDIUM | R-24, E-24, T-23 | Empty in-document find queries have no semantics |
+| F-086 | MEDIUM | R-19, C-11, E-06, T-22 | Cross-file fragment links have no destination-position rule |
+| F-087 | MEDIUM | C-08, K-09, T-26 | Anchor fingerprint normalization is underdefined |
+| F-088 | MEDIUM | R-25, C-03, T-24 | Equal-rank global search results have no tie-breaker |
+| F-089 | MEDIUM | R-32, C-04, §11, §9 | Preference persistence is not fully verified |
+| F-090 | MEDIUM | R-30, C-04, T-11 | The zoom acceptance case gives incompatible HUD results |
+| F-091 | MEDIUM | I-008, T-32 | The idle-CPU acceptance threshold is not reproducible |
+| F-092 | LOW | §3.1, Figure 3.1, E-21 | The lifecycle diagram omits the deletion self-transition |
+| F-093 | LOW | R-24, R-27, C-10, K-10, E-17, T-19, T-23, T-39 | Normative variables and related numeric expressions use inconsistent notation |
 
 ## 4. Detailed Findings
 
-### F-062 — A file that exists but is not UTF-8 (or vanishes before the read) gets a history row and an empty window
+### F-076 — Launch with an unreadable history head has contradictory terminal state
 
 **Severity:** HIGH
 
-**Location:** R-04 ("a file that is not valid UTF-8 is unreadable (E-03, D-16)"); E-03 ("Load aborted; window keeps its previous document; no history entry added"); §3.1 `LOADING` ("unreadable file → the previous state … no history change"); D-16; T-39 ("does not open and the window keeps its previous document"); §11 rows E-03 and R-04 (plain, i.e. verified)
+**Location:** R-40; §3.1 `EMPTY` and `LOADING`; E-03; Figure 3.1; T-28
 
 **Observation**
 
-`loadFile` (`mdv/ContentView.swift:2503-2513`) checks `fileExists` and `isReadableFile` — both permission-level — then calls `history.add(path:)` and sets `selectedEntry`. The bytes are read only in `loadCurrentEntry` (`mdv/ContentView.swift:2743-2747`):
-
-```swift
-if let content = try? String(contentsOf: url, encoding: .utf8) {
-    rawMarkdown = content
-} else {
-    rawMarkdown = ""
-}
-```
-
-`markdownView` shows `emptyState` — the "No file open / Drag and drop, or press ⌘O" panel — whenever `rawMarkdown.isEmpty` (`mdv/ContentView.swift:1245-1248`). So for a Latin-1 file, or a file deleted between the existence check and the read: the history row is added at the top and selected in the sidebar, the watcher is armed on the path, `_indexFile` skips it silently (`mdv/Database.swift:429`), and the window shows the drop target with no message. The previous document is gone. The same branch runs when a sidebar row (F-063), ⌘← or ⌘0 targets a path deleted since, and for any zero-byte `.md` file, which therefore also displays "No file open" while a file is, in fact, open.
+R-40 says the application shows `EMPTY` **only** when history is empty. The `LOADING` row and Figure 3.1 instead send an unreadable initial file with no previous document to `EMPTY`. A persisted history may legally contain a path that was deleted, became unreadable, or ceased to be valid UTF-8. The specification does not say whether launch then keeps the non-empty history and shows `EMPTY`, removes the failed row, or tries later rows until one loads.
 
 **Why it matters**
 
-E-03 is the failure model for the whole loading path, and §3.1 makes it a transition (`LOADING → previous state`). An implementer builds the abort; a verifier running T-39 expects the previous document and finds an empty window with a new row.
+This is the initial-state rule. Each interpretation produces a different selected row, watcher, search population, and visible first screen.
 
 **Potential consequence**
 
-T-39 fails as written; T-04's `chmod 000` case passes (that path is guarded), which hides the gap. A reader who opens a Windows-1252 file loses the document they were reading and gains a history row that can never be searched.
+A conforming implementation can violate either R-40 or E-03 for a common stale-history case. The current acceptance set does not distinguish the alternatives.
 
 **Recommended resolution**
 
-Decide per D-16 and mark the row. If the requirement stands (recommended — it is what E-03, D-16 and T-39 already say), mark E-03/R-04 *open defect* in §11 with the fix: read and decode in `loadFile` before `history.add`, abort on failure, and pass the decoded string to the entry load so the file is read once. Separately, state what an **empty** file displays — as built the "No file open" panel; the honest rule is an empty page with the file selected — and add the case to T-39. Add to §3.1 `VIEWING` → "selected entry unreadable at load (sidebar row, ⌘←, ⌘0) → as E-03".
+Choose one launch policy and state it in R-40 and §3.1. The smallest change is: attempt the head once; if it is unreadable, enter `EMPTY` while retaining history, explicitly making this a second allowed `EMPTY` entry. If the intended behavior is to find the first readable row instead, define ordering, whether failed rows remain, and the all-unreadable outcome. Add the stale-head case to T-28.
 
-### F-063 — Sidebar row, search hit and ⌘←/⌘→ select an entry without adding a history row or re-indexing
+### F-077 — Cold-start file arguments leave back-stack behavior unresolved
 
 **Severity:** HIGH
 
-**Location:** §3.1 `LOADING` ("history row added (R-20), file indexed (R-26)" — for every entry into the state); R-01 (lists "a history-sidebar row, a search hit" among the open routes); R-20 ("every file opened, most recent first"); R-26 ("index a file's content … when it is added to history (opened, …)"); R-18 ("loads the file"); T-24 ("touch it → re-indexed on next open"); T-25
+**Location:** R-40; R-18; T-28; §11 row R-40
 
 **Observation**
 
-`selectedEntry` is assigned on six sites (`mdv/ContentView.swift`): `loadFile` and `loadDirectory` (`:2512`, `:2547`) go through `history.add`, which moves the row to the top, saves, and calls `Database.indexFile` (`mdv/HistoryManager.swift:27-40`). The other four do not: the sidebar `List(selection: $selectedEntry)` (`:651`), `openHit` when the hit's path is already in history (`:865-866`), `applySnapshot` for ⌘←/⌘→ (`:2228`), and `delete(_:)` (`:957`). None of them reorders history or re-indexes. Consequences:
-
-- clicking the fifth sidebar row leaves it fifth; R-20's "most recent first" holds for *added* files only;
-- a file edited on disk and re-opened from the sidebar keeps its stale FTS content until the next launch (`HistoryManager.init` re-indexes) — T-24's "re-indexed on next open" is true only for ⌘O/drop/link/bookmark/CLI opens;
-- ⌘← after swipe-deleting the displayed row (§3.1 says the snapshot is pushed) sets `selectedEntry` to an entry that is no longer in `history.entries`: the document is shown, no sidebar row is selected, and the index has already dropped it.
+R-40 says whether a cold-start file argument pushes the automatically restored history head onto the back stack is “to be verified.” T-28 tells the tester to record the result and file an open defect for one outcome instead of stating the required outcome. Section 11 nevertheless treats the plain R-40 row as realised and verified.
 
 **Why it matters**
 
-The spec uses "opened" for two different operations. An implementer following §3.1 routes every selection through the add path (the natural reading), producing a sidebar that reorders on every click and an index refreshed on every selection — materially different from the tree, and arguably better. A verifier cannot run T-24 without knowing which route "open" means.
+Back navigation after `mdv B.md` is observable behavior. An implementer cannot infer whether history head A was a real navigation origin or merely an initialization artifact.
 
 **Potential consequence**
 
-T-24 passes or fails depending on the route the tester chooses; T-25's "most recent first" is untestable for sidebar clicks; the stale-index case is invisible until a search returns text the file no longer contains.
+Two implementations can both claim conformance while ⌘← either opens A or does nothing. T-28 cannot return pass/fail for this branch.
 
 **Recommended resolution**
 
-Split the routes in R-01 and §3.1: **adding routes** (⌘O, ⌘⇧O, LaunchServices/`bin/mdv`, drop, link, bookmark, placeholder, directory) add-or-move the row and index; **selecting routes** (sidebar row, search hit, ⌘←/⌘→, delete-current-row) display an entry without touching history order or the index. Reword R-20 to "most recently *added* first", R-26 to "on add and on launch", and T-24's "on next open" to "on next ⌘O". For the deleted-row snapshot, choose: drop snapshots whose entry is removed (recommended, one line in `delete(_:)`), or specify that ⌘← re-adds the row. Add a T-25 step: "click the third row: the order is unchanged".
+Make the decision normative. Recommended: when a cold-start argument is already available, initialize directly with that file and do not create a snapshot for a document the reader never saw. Replace the observational clause in T-28 with the selected expected result and mark R-40 verified only after that assertion exists.
 
-### F-064 — Files evicted by the 100-entry cap stay in the full-text index
+### F-078 — Cross-file bookmark and placeholder jumps conflict with the general push rule
+
+**Severity:** HIGH
+
+**Location:** R-18; R-27; R-28; T-22; T-27
+
+**Observation**
+
+R-18 first says loading a different file pushes the outgoing document and clears the forward stack. The same row later says bookmark and placeholder jumps do not push. R-27 permits a bookmark to load another file, and R-28 explicitly permits the placeholder to load another file. T-27 expects a cross-file placeholder jump not to create a back destination, but no equivalent cross-file bookmark assertion exists.
+
+**Why it matters**
+
+The general rule and its apparent exceptions overlap. The resulting stack contents differ after ordinary navigation.
+
+**Potential consequence**
+
+After jumping from A to a bookmark or placeholder in B, ⌘← can return to A in one implementation and not another.
+
+**Recommended resolution**
+
+Rewrite R-18 as an ordered rule: different-file loads push **except** bookmark and placeholder jumps, if that is intended. State whether the exception applies regardless of whether the target is the current file. Add one cross-file bookmark case to T-22 or T-26.
+
+### F-079 — Remote-image fetching contradicts the no-network-content invariant
+
+**Severity:** HIGH
+
+**Location:** §0 trust boundary; R-16; I-001; I-003
+
+**Observation**
+
+The trust boundary explicitly classifies image URLs as untrusted document content. R-16 and I-001 allow an enabled remote-image path to issue a network request for such a URL. I-003 says document content never reaches an external URL or network request and lists no remote-image exception.
+
+**Why it matters**
+
+I-003 is a security invariant. It is false whenever remote images are enabled because the document-provided URL necessarily determines the network destination and request target.
+
+**Potential consequence**
+
+A verifier cannot determine whether remote fetching is a permitted disclosure or an invariant violation. Security documentation can overstate privacy guarantees.
+
+**Recommended resolution**
+
+Add an explicit R-16 exception to I-003: only the user-enabled remote-image URL may leave the process, and no other document bytes may be attached. Define whether redirects, cookies, referrers, authentication state, and URL query strings are permitted; trace those rules to a network-level acceptance check.
+
+### F-080 — The no-crash guarantee has no resource-exhaustion contract
+
+**Severity:** HIGH
+
+**Location:** §0 trust boundary; R-16; R-36; I-002; E-11
+
+**Observation**
+
+R-36 and I-002 promise that no document content terminates the application. The specification accepts arbitrary files, data URIs, remote images, Mermaid source, and LaTeX source but defines no maximum input size, decoded image dimensions, download size, network timeout, layout budget, recursion/depth limit, or cancellation deadline. Parser errors have fallbacks; memory and time exhaustion do not.
+
+**Why it matters**
+
+An absolute robustness guarantee is not implementable or verifiable without bounded inputs or defined exhaustion behavior.
+
+**Potential consequence**
+
+Implementations can hang, allocate without bound, or be terminated by the OS on the same hostile document while each claims that ordinary parse failures are covered.
+
+**Recommended resolution**
+
+Define measurable limits for file bytes, decoded/raster image dimensions or bytes, remote download bytes and duration, and renderer work where practical. Specify the visible fallback and cancellation behavior when a limit is exceeded. Add adversarial boundary checks; narrow R-36 to the bounded domain if an absolute guarantee is not intended.
+
+### F-081 — The release tag gate can be bypassed by `VERSION`
+
+**Severity:** HIGH
+
+**Location:** §1 release actor; R-34; §5.3 `dist`; K-11; T-02
+
+**Observation**
+
+R-34 requires `make dist` to refuse unless `HEAD` carries an exact `vX.Y.Z` tag. Section 5.3 says `VERSION=x.y.z` overrides tag lookup for `dist`, while calling that invocation “not a release path.” It still invokes the named `dist` chain and produces release-shaped artifacts. K-11 requires the artifact version to equal the tag. T-02 checks only the untagged invocation without an override and is cited as proving K-11, though it never verifies a successful tagged artifact.
+
+**Why it matters**
+
+Release eligibility and artifact provenance are supply-chain behavior, not an internal implementation choice.
+
+**Potential consequence**
+
+An untagged commit can produce an artifact indistinguishable by name and signing pipeline from a tagged release, contrary to R-34 and K-11.
+
+**Recommended resolution**
+
+Remove the override from `dist`, or move it to a separately named non-publishable target whose outputs cannot satisfy K-11. Add a positive tagged-release acceptance check covering filename, embedded provenance, signature, notarization, staple, and checksum; keep T-02 as the negative gate check.
+
+### F-082 — The required render harness is not specified as an executable contract
+
+**Severity:** HIGH
+
+**Location:** R-39; §9.0; T-13; T-17; T-19
+
+**Observation**
+
+R-39 names `--scan` and `--check` but does not define command syntax, accepted inputs, output location, stdout/stderr, exit codes, fallback handling, golden lookup, or comparison tolerance. It requires raw `test-docs/mermaid/*.mmd` files, while T-13 describes scanning every fenced Mermaid block under that directory. T-17 and T-19 do not provide complete harness invocations.
+
+**Why it matters**
+
+The harness is the specified evidence mechanism for renderer conformance. Different harnesses can accept different corpora and return different pass/fail results.
+
+**Potential consequence**
+
+R-39 can be implemented without making T-13, T-17, or T-19 reproducible from a clean checkout, defeating the requirement's purpose.
+
+**Recommended resolution**
+
+Specify the harness as a CLI table: each invocation, positional arguments, options, file discovery rules, output naming, deterministic environment, exit statuses, and `--check` comparison metric/tolerance. Resolve whether `--scan` consumes raw `.mmd`, Markdown fences, or both. Provide exact commands in T-13, T-17, and T-19.
+
+### F-083 — History recency invariant contradicts selecting-route behavior
 
 **Severity:** MEDIUM
 
-**Location:** R-26 ("the search population is exactly the current history"); I-013; K-03; T-25
+**Location:** R-01; R-20; I-013; T-25
 
 **Observation**
 
-`HistoryManager.add` truncates `entries` to `maxEntries` (`mdv/HistoryManager.swift:34-36`) without calling `Database.removeFile` for the evicted path; `reindex(paths:)` at launch only refreshes listed paths and never prunes `articles`. After the 101st distinct open, ⌘⇧F still returns the evicted file; `openHit` then falls into its "shouldn't happen today" branch (`mdv/ContentView.swift:867-871`) and `loadFile`s it, re-adding the row. T-25 checks swipe-delete removal but not eviction.
+R-01 and R-20 say selecting a sidebar row, existing search hit, or navigation snapshot does not reorder history. I-013 says the most recently **opened** path is first. T-25 explicitly opens the third row while requiring the order to remain unchanged and cites I-013.
 
 **Why it matters**
 
-R-26's population rule is a MUST an implementer will build (prune on evict, or prune at launch by set difference) and a verifier will test; the tree does neither.
+“Opened” includes both adding and selecting routes in R-01, so the invariant cannot hold with the test.
 
 **Potential consequence**
 
-Search hits for files the reader deliberately let fall off the list; a growing `mdv.db` for heavy users.
+An implementation that moves a selected row to the top satisfies I-013 but fails R-20 and T-25; one that does not has the opposite inconsistency.
 
 **Recommended resolution**
 
-Mark R-26 *open defect* (fix: `removeFile` for each evicted path in `add`, and a launch-time `DELETE FROM articles WHERE path NOT IN (…)`), or narrow R-26 to "swipe-delete removes; eviction does not". Add a T-25 step: "open 101 files; ⌘⇧F for a word unique to the first: no hit".
+Change I-013 to “the most recently **added** path is first,” using R-01's defined route term. Retain T-25 as the conformance example.
 
-### F-065 — Fenced code blocks do not scale with ⌘=/⌘-; the spec is silent
+### F-084 — Mermaid width formulas disagree at narrow widths
 
 **Severity:** MEDIUM
 
-**Location:** R-30 ("scale body text … and MUST also scale document math"); C-05; T-11 ("body text, headings, and math grow together")
+**Location:** R-11; K-07; §7.2; T-18
 
 **Observation**
 
-`CodeRenderer.render` sets the font to `theme.baseFontSize * 0.85` (`mdv/CodeRenderer.swift:82`, `:132`, `:146`) — the theme's unscaled base — inside the `AttributedString`, and the `.codeBlock` theme style deliberately applies no text style on top (`mdv/ThemeManager.swift:560-568`). `markdownTheme(scale:)` scales `bodySize` and the inline-code `FontSize(.em(0.90))` follows it. So at 150 % the prose is 24 pt, inline code 21.6 pt, and fenced code still 13.6 pt.
+R-11 and K-07 use the floored minimum of natural width and column width minus 36 pt. Section 7.2 inserts a lower bound of 1 pt with $\max(w_{\mathrm{col}} - 36, 1)$. The formulas differ whenever $w_{\mathrm{col}} < 37$ pt. T-18 covers wide and ordinary resize cases but not the lower boundary.
 
 **Why it matters**
 
-R-30 names what scales; a reasonable implementer scales everything typographic, including fences, and T-11 does not say otherwise. Two implementations differ visibly at every zoom level.
+Without the lower bound, the normative formula can produce zero or negative raster widths.
 
 **Potential consequence**
 
-A verifier at T-11 either passes or fails the fence depending on their reading; a reader zooming for legibility gets the one block type that does not move.
+Narrow windows can trigger different sizes, fallback behavior, or renderer errors across implementations.
 
 **Recommended resolution**
 
-Decide and state it in R-30: either "fenced code is exempt (fixed at $0.85 \times$ base)" — an odd product rule — or mark *open defect* with the fix (`fontSize: theme.baseFontSize * scale * 0.85`, and add `scale` to the C-05 cache key). Add the fence to T-11 either way.
+Make §7.2 the single normative formula and have R-11 and K-07 reference it verbatim. Add a T-18 case below 37 pt of available column width and assert the 1 pt result or the chosen minimum viable width.
 
-### F-066 — "Shell language" for *Copy Without Prompts* is undefined
+### F-085 — Empty in-document find queries have no semantics
 
 **Severity:** MEDIUM
 
-**Location:** R-08 ("blocks in a shell language whose non-empty lines are at least half `$ `/`# `-prompted")
+**Location:** R-24; E-24; T-23
 
 **Observation**
 
-`isShellLanguage` (`mdv/CodeRenderer.swift:254-257`) tests the **raw first word** of the fence info string, lower-cased, against `bash sh zsh fish shell console` — not the C-05 resolution. `fish` and `console` are not in C-05 (they highlight as plain) yet are prompt-aware; a fence tagged `shell-session` or `sh-session` is not. The half rule itself matches R-08 (`prompted * 2 >= lines.count` over non-empty lines).
+R-24 defines case-insensitive substring matching with the query taken verbatim but does not special-case an empty string. E-24 defines empty and whitespace-only behavior only for global search. Empty-string substring matching can mean no matches, one match per boundary, or an unavailable next/previous action.
 
 **Why it matters**
 
-R-08 is a MUST with an enumerable trigger. Implementers will pick C-05's bash aliases (`bash sh zsh shell`) and miss `fish`/`console`, or add `powershell`.
+The find bar starts empty, so this is an ordinary state rather than a pathological input.
 
 **Potential consequence**
 
-T-06 passes for `bash` and says nothing about the rest; the menu item appears or not for `console` blocks depending on the build.
+The match count, button enabled state, and ⌘G behavior can diverge immediately after opening the find bar.
 
 **Recommended resolution**
 
-Put the set in C-05 as a third list: "prompt-aware fence words (raw first word, case-insensitive): `bash sh zsh fish shell console`", and cite it from R-08.
+State that an empty in-document query produces no matches and disables stepping, or define the intended alternative. Preserve R-24's “verbatim” rule for non-empty whitespace queries. Add both cases to T-23.
 
-### F-067 — Column width: `articleMaxWidth` caps the padded frame, not the content
+### F-086 — Cross-file fragment links have no destination-position rule
 
 **Severity:** MEDIUM
 
-**Location:** K-13 ("the window's content area minus the sidebar and inspector … minus $2 \times$ `articleHorizontalPadding`, capped at `articleMaxWidth`"); R-11; K-07; K-10 ("article max width 860 pt, gutter 40 pt"); T-18
+**Location:** R-19; C-11; E-06; T-22
 
 **Observation**
 
-The article stack is built as `.padding(.horizontal, articleHorizontalPadding)` **then** `.frame(maxWidth: articleMaxWidth)` (`mdv/ContentView.swift:1323-1327`), so the cap applies to the padded frame and the content is narrower by the padding; each block additionally carries `.padding(.horizontal, 6)` (`:1256`). K-13's sentence order reads as "subtract, then cap", which yields 860 pt of content in a wide window; the tree yields $860 - 80 - 12 = 768$ pt, and a Mermaid raster at $768 - 36 = 732$ pt.
+R-19 defines local-file navigation and separately defines scrolling for a link that is exactly `#fragment`. It does not say what happens for `other.md#fragment`: open at the matching heading, restore the file's stored scroll position, or open at the top. It also does not state when percent-decoding occurs before C-11 comparison.
 
 **Why it matters**
 
-T-18 asks the verifier to compare the raster width to "the column width of K-13 minus 36 pt" — an 80–92 pt discrepancy is a clear fail against the formula as written.
+Cross-file anchors are a common Markdown link form and affect both file loading and position restoration.
 
 **Potential consequence**
 
-T-18 fails for a conforming build; an implementer reproducing K-13 literally renders every diagram 92 pt wider than the app.
+Two conforming implementations can display different sections after the same link click.
 
 **Recommended resolution**
 
-Write K-13 as a formula with the cap inside:
+Define the processing order for path plus fragment: resolve path, load under the adding-route rules, normalize or decode the fragment, then either scroll to the first matching slug or apply an explicitly chosen top/restore rule. Add a cross-file fragment and a percent-encoded fragment to T-22.
 
-$$
-w_{\mathrm{col}} = \min\bigl(w_{\mathrm{area}} - w_{\mathrm{side}} - w_{\mathrm{insp}},\; w_{\max}\bigr) - 2p - 2b
-$$
-
-where $w_{\mathrm{area}}$ is the window content width, $w_{\mathrm{side}}$ and $w_{\mathrm{insp}}$ are the pane widths plus their 8 pt handles when shown (0 when hidden), $w_{\max}$ is `articleMaxWidth` ($\infty$ when the theme sets none), $p$ = `articleHorizontalPadding`, and $b = 6$ pt is the per-block padding. Restate K-10's "article max width 860 pt" as the padded-frame cap.
-
-### F-068 — A mid-line `$$…$$` uses the `display/` host and display typesetting
+### F-087 — Anchor fingerprint normalization is underdefined
 
 **Severity:** MEDIUM
 
-**Location:** C-07.1 (the URL listing: `mdv-math://inline/… // $…$, or $$…$$ mid-line`); K-08 ("inline spans typeset in `.text` style, display in `.display`"); E-16
+**Location:** C-08; K-09; T-26
 
 **Observation**
 
-`MathMarkdown.rewrite` calls `spec(latex, display: true, at: i)` for every `$$…$$` span (`mdv/MathRenderer.swift:167-186`), whether or not it is on its own line; `MathSpec.url` maps `display: true` to the `display` host and `MathImageCache` to `labelMode: .display`. Only the paragraph placement (own paragraph vs. inline image via `MathInlineImageProvider`) depends on line position. So `text $$\sum_{i=1}^n x_i$$ text` is an inline image typeset in display style (limits above and below the sum), not `.text` style as C-07.1/K-08 imply.
+C-08 defines a fingerprint as “the block's words joined by single spaces, lower-cased, truncated to 80 characters.” It does not define what counts as a word, which whitespace classes split words, the case-folding locale or Unicode operation, or whether 80 counts bytes, Unicode scalars, UTF-16 code units, or grapheme clusters.
 
 **Why it matters**
 
-C-07.1 is a contract with a decoder on the other side; a unit test on the URL (§9.0 lists `MathMarkdown.rewrite` under the unit group) written from the spec fails. Visually, display-style limits inside a sentence are a deliberate Pandoc-compatible choice that the spec should state rather than contradict.
+Fingerprints are durable identifiers used after edits and across launches. Different normalization changes which block wins.
 
 **Potential consequence**
 
-T-07 disagreement on how a mid-line `$$` sum should look; a URL golden test that fails against the tree.
+Anchors containing non-ASCII case, combining marks, emoji, or unusual whitespace resolve differently across implementations.
 
 **Recommended resolution**
 
-Correct C-07.1: `inline/` is emitted for `$…$` only; `display/` for every `$$…$$`; "own paragraph" is a placement rule, not a host rule. Restate K-08 as "`$…$` → `.text`; `$$…$$` → `.display`, in both placements". E-16's "at text size" is then about size, not mode — say so.
+Specify an exact normalization pipeline and truncation unit. For example: split on Unicode whitespace, join with U+0020, apply locale-independent Unicode lowercase without additional normalization, then take the first 80 extended grapheme clusters. Add Unicode and whitespace boundary cases to the future C-08 unit group.
 
-### F-069 — Swipe-deleting a history row also deletes the path's scroll position
+### F-088 — Equal-rank global search results have no tie-breaker
 
-**Severity:** LOW
+**Severity:** MEDIUM
 
-**Location:** R-06, R-26, C-08
+**Location:** R-25; C-03; T-24
 
 **Observation**
 
-`Database.removeFile` deletes from `articles` **and** `scroll_positions` (`mdv/Database.swift:395-409`). R-26 specifies the index removal; nothing mentions the scroll anchor. Bookmarks for the path are kept.
+C-03 specifies `ORDER BY rank LIMIT 80` but no secondary order for equal FTS5 ranks. R-25 exposes an ordered result list, and the limit makes tie ordering affect which rows are included.
 
 **Why it matters**
 
-Re-opening the file later starts at the top; a spec reader expects C-08 anchors to survive history edits as bookmarks do.
+Database row order without a complete ordering key is not a deterministic contract.
+
+**Potential consequence**
+
+The same index can return a different result sequence or a different subset at the 80-row boundary.
 
 **Recommended resolution**
 
-Add to R-26: "and its `scroll_positions` row; bookmarks are kept".
+Define a stable secondary key, such as normalized absolute path and then article id, and include it in the normative query. Add an equal-rank case crossing the result limit.
 
-### F-070 — Stored-value edge cases
+### F-089 — Preference persistence is not fully verified
 
-**Severity:** LOW
+**Severity:** MEDIUM
 
-**Location:** C-04 (`mdv_font_scale` "clamped on read"; `mdv_theme_id`); R-29; R-30; K-06; R-26
+**Location:** R-32; C-04; §9; §11 rows R-32 and C-04
 
 **Observation**
 
-(a) `setFontScale` rounds to one decimal after clamping (`mdv/ThemeManager.swift:1039-1047`); a stored `1.25` is clamped but not snapped on read, so the first ⌘= lands on `1.4` (a $+0.15$ step), and the HUD shows 125 % until then. (b) An unknown `mdv_theme_id` resolves to `high-contrast` via `MDVTheme.byID` (`:959-961`) while `selectedID` keeps the unknown string (`:1005`), so the toolbar picker has no matching item until the reader picks one. (c) `_indexFile` compares `Int64(mtime)` (`mdv/Database.swift:420-427`): an edit within the same second as the last indexing is skipped — K-06 notes whole-second truncation for C-08 only.
+R-32 requires every C-04 preference to survive relaunch. Section 11 cites T-11, T-21, T-25, and T-31, but those tests cover only some keys. The acceptance set does not verify relaunch persistence for smart typography, remote-image loading, sidebar collapse, inspector visibility, bookmark expansion/height, or editor selection. Invalid-type and invalid-enumeration fallback behavior in C-04 is also largely untested.
+
+**Why it matters**
+
+The traceability row overstates the evidence for a broad universal requirement.
+
+**Potential consequence**
+
+Several preference keys can be ignored, reset, or mishandled while all cited tests pass.
 
 **Recommended resolution**
 
-C-04: "values outside the listed type, range, or enumeration fall back to the default; `mdv_font_scale` is clamped and then snapped to one decimal on the first step". K-06: "index mtime gate: whole seconds".
+Add a compact table-driven persistence acceptance check covering every C-04 key, including wrong-type, out-of-range, and unknown-enumeration cases. Update §11 to cite the complete check rather than partial feature tests.
 
-### F-071 — Find state across a live reload
+### F-090 — The zoom acceptance case gives incompatible HUD results
 
-**Severity:** LOW
+**Severity:** MEDIUM
 
-**Location:** R-24, R-05
+**Location:** R-30; C-04; T-11
 
 **Observation**
 
-On `rawMarkdown` change with the find bar open, `recomputeMatches()` runs and resets `currentMatchIndex` to 0 (`mdv/ContentView.swift:427`, `:2339-2355`); the bar's *n* jumps to 1 of the new *m*. The query is matched with `.caseInsensitive` only — untrimmed, no diacritic folding (unlike the global search's `remove_diacritics 2`, K-09).
+R-30 says the HUD appears after each change and displays the rounded current scale. T-11 writes `1.25`, invokes ⌘=, then says the HUD shows 125% while the scale lands on 140%. A post-change HUD cannot show both the pre-change and resulting value. The same case is intended to disambiguate snapping at a half-tenth but does not state the tie rule directly.
+
+**Why it matters**
+
+The test expected result conflicts with the formula it is meant to verify.
+
+**Potential consequence**
+
+A correct 140% HUD can fail T-11, while a stale 125% HUD can pass its wording.
 
 **Recommended resolution**
 
-One clause in R-24: "a reload (R-05) recomputes *m* and returns to the first occurrence; the query is matched verbatim (no trimming, no diacritic folding)".
+Specify the step algorithm and tie rule explicitly. If `1.25` snaps to `1.3` and then increments to `1.4`, T-11 should require the post-change HUD to show 140%. If the HUD intentionally previews the stored value first, define the two display events and their timing.
 
-### F-072 — Release-engineer inputs are not in the spec
+### F-091 — The idle-CPU acceptance threshold is not reproducible
 
-**Severity:** LOW
+**Severity:** MEDIUM
 
-**Location:** §5.3, §10 ("Environment variables: `MDV_APP`"), §1 (Release engineer)
+**Location:** I-008; T-32
 
 **Observation**
 
-`make dist` and `github-release` read `VERSION` (tag override), `TEAM_ID` and `CERT_NAME` (defaults hard-coded to one individual's Developer ID identity, `Makefile:40-41`), `NOTARY_PROFILE` (default `mdv-notary`, `:51`) and `NOTES_FILE` (`:57`); `sign` and `notarize` exit 1 when the first two are empty. §5.3 mentions only `VERSION`.
+T-32 requires `top` samples over 30 seconds to show at most 1% CPU but does not define sampling interval, warm-up, aggregation, process selection, display scale, machine state, or whether every sample, mean, median, or percentile must meet the threshold. I-008's actual invariant is bitmap backing and static-page idle behavior; the numeric threshold appears only in the test.
+
+**Why it matters**
+
+A metric is reproducible only when its population, aggregation, and conditions are defined.
+
+**Potential consequence**
+
+The same build can pass or fail based on one transient sample or tester interpretation.
 
 **Recommended resolution**
 
-A "Release inputs" line under §5.3 listing the five variables, their defaults, and which targets require them; note that the shipped defaults name a specific signing identity and must be overridden by any other release engineer.
+Either test I-008 structurally and retain CPU as diagnostic evidence, or define a benchmark protocol: warm-up, sample cadence, aggregate, allowed transient percentile, test document, window state, and hardware/OS baseline. Place the threshold in a K-nn requirement if it is normative.
 
-### F-073 — Launcher argument edge cases
+### F-092 — The lifecycle diagram omits the deletion self-transition
 
 **Severity:** LOW
 
-**Location:** §5.2, R-33
+**Location:** §3.1 `VIEWING`; Figure 3.1; E-21
 
 **Observation**
 
-`bin/mdv:58` accepts `-` only when it is the sole argument; `mdv - a.md` reaches the file loop and exits 1 with `mdv: no such file: -`. The loop (`:67-74`) reports and exits on the **first** missing argument only. `-h`/`--help`/`--version` run after `find_app`, so with no bundle they print the not-found error and exit 1 (§5.2's "any, bundle not found" row covers this, but R-33's "print the bundle version for `--version`" reads as unconditional).
+The normative table states that deleting the displayed file leaves the window in `VIEWING` with its existing content. Figure 3.1 cites E-21 but has no `VIEWING` self-transition for delete or an unreadable reload.
+
+**Why it matters**
+
+The diagram is illustrative, but its stated coverage is incomplete and can mislead a lifecycle reader.
+
+**Potential consequence**
+
+An implementer relying on the diagram may treat deletion as an unspecified exit or conflate it with history-row deletion.
 
 **Recommended resolution**
 
-Add the two rules to the `mdv -` and `mdv FILE…` rows.
+Add a `VIEWING --> VIEWING` edge labeled with E-21, or narrow the figure caption so it does not claim that transition.
 
-### F-074 — Placeholder or back-stack target that no longer exists
+### F-093 — Normative variables and related numeric expressions use inconsistent notation
 
 **Severity:** LOW
 
-**Location:** R-28, R-18, E-09
+**Location:** R-24; R-27; C-10; K-10; E-17; T-19; T-23; T-39
 
 **Observation**
 
-`jumpToPlaceholder` → `jumpTo` → `loadFile` returns silently when the file is gone (`mdv/ContentView.swift:2679-2694`, `:2505`): no beep, no navigation, the placeholder is kept. ⌘← to a deleted file goes through `applySnapshot` → `loadCurrentEntry` and shows the empty window of F-062. A bookmark in the same situation beeps (E-09).
+Normative variables appear as Markdown italics (`*m*`, `*n*`) rather than math, and K-10 writes the three heading scales as `$1.75 / 1.4 / 1.15$` without naming each value in the expression. Related rows alternate between italic, code, and math forms.
+
+**Why it matters**
+
+The document otherwise uses LaTeX consistently. Mixed notation weakens symbol ownership and can render the heading-scale slash as division rather than a tuple.
+
+**Potential consequence**
+
+This is primarily editorial, but it makes formula and identifier tooling less reliable.
 
 **Recommended resolution**
 
-An E row: "placeholder or snapshot whose file is missing: ⌘0 beeps (as E-09); ⌘←/⌘→ skips the snapshot" — or document the as-built silence.
-
-### F-075 — Editorial and provenance
-
-**Severity:** LOW
-
-**Location:** front matter; §3.3; §11 R-40; C-06.1 rule 3; C-07.2; C-12
-
-**Observation**
-
-- Front matter: "as-built … at commit `fb5794b`" — HEAD is `a255106`; the intervening code commit `112fcaf` (Package.swift `exclude: ["Help.md"]`; `DefaultInlineImageProvider.default`) is behaviour-neutral but the pointer should move with each spec version.
-- §3.3 History list "Written when: every open, delete, clear" — R-26 says clear has no UI; and "every open" is "every add" (F-063).
-- §11 R-40 cites `initialURL`; it is set only by `spawnNewWindow` (⌘⇧O, `:2487`). A cold-start file argument arrives as `.openURLInWindow` after `onAppear` has loaded the history head — which is exactly why R-40 leaves the back-stack question to T-28. Cite `NotificationHandlers` / `application(_:open:)` instead.
-- C-06.1 rule 3: colour names are mapped only when preceded by `fill:`, `stroke:` or `color:` (`mdv/MermaidRenderer.swift:1028-1034`); a bare name elsewhere on a `style` line is passed through.
-- C-07.2: `\operatorname{X}` (unstarred) is also rewritten to `\mathrm{X}` (`mdv/MathRenderer.swift:563`).
-- C-12: "the next heading with level $\leq$" means the next **TOC** heading (`sectionRange` searches `tocHeadings`, `:1450-1452`); an h4–h6 or setext heading never ends a section. Say "TOC heading (C-02 rule 7)".
-
-**Recommended resolution**
-
-Apply as listed.
+Use `$m$`, `$n$`, and `$i$` for mathematical variables. Replace the heading-scale shorthand with named assignments such as $h_1 = 1.75$, $h_2 = 1.40$, and $h_3 = 1.15$.
 
 ## 5. Requirements Review
 
-R-01..R-40 are observable and, with the exceptions above, precise. The requirement set is complete for the product as scoped; no new requirement is missing, but two existing ones need their populations defined: R-20/R-26 ("opened" = added, F-063) and R-30 (which block types scale, F-065). R-08's trigger set (F-066) is the only requirement whose condition is not derivable from the spec. No requirement conflicts with another; the conflicts are spec-versus-tree.
+Most R-nn rows are observable and name their triggering route, result, and cross-reference. Rendering, history, reload, and persistence requirements are particularly concrete. The material exceptions are R-40's unresolved branch, R-18's overlapping general rule and exceptions, R-34's conflict with §5.3, and R-36's unbounded universal guarantee. No major product capability is missing from the stated scope.
 
 ## 6. Interface and Data-Contract Review
 
-C-01, C-03, C-04, C-05 (resolution and aliases), C-06.1 (order and lists), C-06.3, C-08 (fingerprint, resolve, mtime tolerance), C-13, C-15, §5.1, §5.2 and §5.3 were read against the code and match. C-07.1's host rule is wrong for mid-line `$$` (F-068). C-05 needs the prompt-aware fence set (F-066). C-04's invalid-value behaviour is unstated (F-070). §5.3 lacks the release inputs (F-072). The persistence schema is unchanged and correct (`schema_version` 4).
+The GUI, launcher, persistence schema, renderer entry points, and build targets are well enumerated. C-15 is a strong serialized-data contract. C-08 needs an exact Unicode normalization/truncation algorithm. C-03 needs a complete ordering key. R-39 is the largest interface gap: a named CLI with undefined invocation and exit semantics is not independently implementable.
+
+Compatibility is generally explicit through platform and dependency pins. The required future Swift/SQL grammar additions name repositories only in D-15 and rely on later README pins; this is acceptable once the chosen commits and fixture outputs are checked in.
 
 ## 7. State and Failure Review
 
-§3.1 is the right shape but its `LOADING` row bundles two different entries (add-route vs. select-route, F-063) and its `unreadable → previous state` transition is not what the tree does for the decode failure (F-062). A corrected lifecycle the author can paste:
+The lifecycle table is a strong foundation and correctly separates `EMPTY`, `LOADING`, `VIEWING`, `RELOADING`, and `CLOSED`. Failure fallback for unreadable files, transient saves, missing bookmarks, parser rejection, persistence faults, and remote-image failures is extensive.
 
-```mermaid
-stateDiagram-v2
-    [*] --> EMPTY : launch, empty history (R-40)
-    [*] --> LOADING : launch, history head (R-40)
-    EMPTY --> LOADING : add route or select route (R-01)
-    LOADING --> VIEWING : read + decode OK (R-04)
-    LOADING --> VIEWING : decode fails, prior document kept (E-03, intended)
-    LOADING --> EMPTY : decode fails, no prior document (E-03, intended)
-    VIEWING --> LOADING : add route (row added or moved, indexed) or select route (row untouched)
-    VIEWING --> EMPTY : last history row deleted (R-20)
-    VIEWING --> RELOADING : file changed on disk (R-05)
-    RELOADING --> VIEWING : content swapped, position kept
-    VIEWING --> CLOSED : window close / quit (R-06)
-    CLOSED --> [*]
-```
-
-*Figure — proposed §3.1 with add/select routes split; the two "intended" edges are the F-062 open defect.* Failure semantics elsewhere (E-01, E-02, E-05..E-25) hold; the watcher rules (R-05/E-21) were re-verified against `loadCurrentEntry`'s callback and match exactly, including the second read after 0.5 s ignoring a failed read.
+The blocking state defects are the unreadable history head at launch and the cold-start/back-stack branch. Navigation snapshot policy also needs an explicit exception order. Retry semantics are defined for transient zero-byte reloads and migrations, but cancellation/resource behavior for oversized or long-running untrusted inputs is not.
 
 ## 8. Determinism and Algorithm Review
 
-Verified deterministic and as specified this pass: directory selection (R-02: extension set, `skipsHiddenFiles`, readability, `localizedCaseInsensitiveCompare`, README stem match, sibling order), drop filter (R-03), block split and TOC (C-02 rules 1–7 including the `$$` fence and the h1–h3 first-line rule), FTS query construction (C-03), fingerprint/resolve (C-08), language resolution (C-05), sanitiser order and colour table (C-06.1), document theme mixes (C-06.3), math delimiters (C-07.1), rewrite table (C-07.2), section range (C-12), zoom clamps and snap (R-30), scroll-restore gate (E-08). Diverging: the math host rule (F-068), the code font size (F-065), the column width (F-067).
+The column-width and ink-weight formulas are unusually precise, and the ink metric defines its empty-set case. Mermaid repair order, math rewrite order, slug behavior, section boundaries, and FTS token construction are mostly deterministic.
+
+Remaining nondeterminism: the 1 pt raster lower bound is not repeated consistently, equal-rank search results lack a tie-breaker, anchor fingerprint normalization is not Unicode-complete, and the `1.25` zoom acceptance case conflicts with its resulting HUD value.
 
 ## 9. Edge-Case Review
 
-E-01..E-26 hold as written except E-03 (F-062). New cases surfaced: empty file (shows "No file open", F-062); file deleted before a sidebar/⌘←/⌘0 selection (F-062, F-074); 101st open and the index (F-064); snapshot to a swipe-deleted row (F-063); reload with the find bar open (F-071); `mdv - x.md` (F-073); stored preference values out of range (F-070).
+Coverage is strong: malformed files, empty files, atomic saves, missing files, duplicate slugs, unsupported diagrams, invalid math, corrupted storage, multi-window routing, and removed navigation targets all have rows or tests.
+
+Material omissions are an unreadable persisted history head, empty in-document find, cross-file fragments, and resource exhaustion. Narrow-width raster behavior is specified inconsistently rather than omitted.
 
 ## 10. Non-Functional Requirement Review
 
-K-03..K-13 constants re-verified where they are code (100, 80, 14, 5; 0.10/0.60/2.50; 180/400, 180/520, 240; 120/80; 0.05 s, 0.5 s, 0.6 s, 0.9 s, 40, 60; 36 pt, 0.5–4, 540 pt, 96/192/192 MB; 16 pt, 13 pt, 2048; 80 chars). K-13 needs the formula of F-067. No time-to-first-render bound — still an accepted omission.
+Build platform, cache sizes, zoom bounds, UI dimensions, reload latency, release signing, and several timing constraints are measurable. The 30-second CPU check is not a reproducible metric, and the universal no-crash claim is not bounded by resource limits. No throughput or opening-latency target is specified; that is acceptable because the product intent's “fast” language is not framed as a normative requirement.
 
 ## 11. Security and Trust-Boundary Review
 
-Nothing new in the application. In the release chain, the Makefile's default signing identity names a specific person and team (F-072); the spec should say the defaults are placeholders for the repository owner's identity.
+The document correctly marks all document content as untrusted, disables the App Sandbox explicitly, blocks remote images by default, prohibits document execution, and limits logging. The principal defect is that I-003 denies the network disclosure that R-16 necessarily permits. Remote fetch redirects, credentials, referrers, timeouts, and byte limits must be specified because the feature crosses the only runtime network trust boundary.
+
+The release tag bypass is also a provenance risk: it allows release-shaped artifacts without the exact tag required by the release actor and R-34.
 
 ## 12. Observability and Provenance Review
 
-R-35's inventory holds: the only `NSLog` sites are `Database` (`[mdv] …`, may name a path), `FontRegistration`, and `openCurrentFileInEditor`. The as-built commit pointer in the front matter is stale by one behaviour-neutral commit (F-075). D-13 (bundle version fixed at 1.0.0) remains the provenance gap.
+Identifiers, persistence locations, schema version, migration behavior, diagnostic prefixes, dependency pins, artifact names, and traceability to source symbols are strong. The specification intentionally minimizes logs, so in-place fallbacks and deterministic persistence are the primary evidence surfaces.
+
+Provenance is weakened by §5.3's `VERSION` override and by T-02's lack of a successful tagged-release verification. Renderer provenance is also incomplete until R-39 defines exact harness commands and corpus discovery.
 
 ## 13. Testing and Verification Review
 
-T-39 fails as written against the tree (F-062). T-24's "re-indexed on next open" is route-dependent (F-063). T-25 lacks the eviction case (F-064) and a "click an older row" step (F-063). T-11 does not name fenced code (F-065). T-18's formula is off by the padding (F-067). T-06 does not cover the non-`bash` prompt-aware fences (F-066). The suite (R-37) and harness (R-39) remain unbuilt; §9.0's target layout is unchanged and still right.
+The test catalog is broad and generally maps behavior to observable outcomes. It includes positive, negative, boundary, failure, integration, visual, persistence, and lifecycle checks. The §11 matrix provides unusually good navigation from requirements to evidence.
+
+Verification is not yet objective for R-40, R-39, R-32, the resource guarantee, or T-32. T-28 is observational rather than asserting. T-02 cannot prove K-11's positive artifact contract. T-11 contains incompatible HUD expectations. T-13's fenced-block wording does not match R-39's required raw `.mmd` corpus.
 
 ## 14. Metrics and Evaluation Review
 
-§7.1 unchanged; adequate. The K-13 formula recommended in F-067 is the only new expression this pass, and its symbols are defined at the point of use.
+The §7.1 ink metric is the strongest evaluation contract in the document: population, luminance function, threshold set, aggregation, degenerate case, and comparison threshold are all defined, and T-17 cites it correctly. The §7.2 worked example also computes correctly for a wide default-theme window.
+
+T-32 does not define an aggregation for CPU samples. Render snapshot “pixel tolerance” in §9.0 has no value or formula; that belongs in the R-39 harness contract. Search ranking is delegated to FTS5 but needs a deterministic tie rule at the output boundary.
 
 ## 15. Traceability Review
 
-Id inventory at v0.5: R-01..R-40, C-01..C-15 (no C-14 gap: it lives in §5.4), I-001..I-013, K-01..K-13, E-01..E-26, T-01..T-40, D-01..D-22 — no gaps, no dangling references, every I/K/E cited by a test, a §11 row for every R/C/I/K/E. §11's symbols were spot-checked and exist, with one misleading citation (R-40 → `initialURL`, F-075). §11 will need *open defect* rows for whichever of F-062, F-064, F-065 the owner decides are code bugs, and the E-03/R-04 rows must lose their "verified" status until then.
+The intent → requirement → contract/invariant → test → implementation matrix is extensive. Most major behavior has at least one path through the chain. The primary broken links are:
+
+- R-40 → T-28: no expected outcome for one branch;
+- R-39 → T-13/T-17/T-19: no executable command contract;
+- R-32/C-04 → cited tests: only a subset of keys is exercised;
+- K-11 → T-02: only rejection is tested, not a conforming artifact;
+- R-36/I-002 → evidence: parser failures are covered, resource exhaustion is not.
 
 ## 16. Internal-Consistency Review
 
-Spec-versus-tree contradictions: E-03/§3.1/T-39 vs `loadCurrentEntry` (F-062); §3.1 `LOADING`/R-20/R-26 vs the four direct `selectedEntry` assignments (F-063); R-26 population vs cap eviction (F-064); C-07.1 host comment vs `rewrite` (F-068); K-13 vs the modifier order (F-067). Spec-internal: §3.3 "clear" vs R-26's "no clear command"; R-30/T-11 silent on fences while C-05 fixes their size; C-12 "heading" vs C-02's TOC-heading definition. Numeric agreement across sections otherwise holds.
+The document is largely self-consistent after its prior review history, but the remaining conflicts are material. R-40 conflicts with E-03 and §3.1 for an unreadable history head; R-18's general push rule overlaps its no-push cases; I-003 conflicts with R-16; R-34 conflicts with the `VERSION` override; I-013 conflicts with selecting routes; and K-07 differs from §7.2 at the lower width boundary.
+
+The two diagrams are captioned and correctly marked illustrative. Figure 3.1 needs the E-21 self-transition to match the normative table.
 
 ## 17. Architecture Review
 
-Sound. The one structural observation: `history.add` is the only place that couples "display this file" to "record and index this file", and four call sites bypass it. Introducing a single `open(entry, mode: .add | .select)` entry point in `ContentView` would make F-062/F-063/F-064 one change each and give §3.1 a code symbol to cite. The `mdvCore` split for R-37 is still the enabling change for tests.
+The architecture supports the stated requirements: block parsing is cached, renderers have repair/fallback layers, window navigation state is per-window, durable data is divided between SQLite and `UserDefaults`, and an offscreen harness is the right verification boundary for native rendering.
+
+The proposed `mdvCore` extraction is non-normative and reasonable. R-39 must prevent the harness from copying pipeline logic; otherwise the verifier could test behavior different from the application. Network loading needs an explicit policy boundary, not only a preference toggle.
 
 ## 18. Implementation-Agent Readiness
 
-**YES — WITH MINOR CLARIFICATIONS.**
+**NO — MATERIAL QUESTIONS REMAIN**
 
 Minimum blocking questions:
 
-1. When a file exists but cannot be decoded as UTF-8 (or vanishes before the read), does the load abort with the previous document kept (E-03 as written) or does the window go empty with a history row added (as built)? And what does an empty file display? (F-062)
-2. Which open routes add-or-move a history row and re-index — every route (§3.1 as written) or only ⌘O/⌘⇧O/LaunchServices/drop/link/bookmark/directory (as built)? (F-063)
+1. What happens when the persisted history head is missing, unreadable, or invalid UTF-8 at launch?
+2. Does a cold-start file argument create a back-stack snapshot for the automatically restored history head?
+3. Do cross-file bookmark and placeholder jumps override the general different-file push rule?
+4. What exact document-derived network data is permitted when remote images are enabled, including redirects and request metadata?
+5. What bounded input/resource domain makes R-36 and I-002 implementable, and what fallback occurs on limit exhaustion?
+6. Can `make dist VERSION=x.y.z` run on an untagged commit, or is exact-tag provenance mandatory for every `dist` artifact?
+7. What are the exact `render-harness` commands, inputs, outputs, exit codes, comparison metric, and corpus discovery rules?
 
-Non-blocking but to be recorded before claiming conformance: F-064..F-068 (pin each rule to the as-built behaviour or mark it *open defect*).
+After those decisions, the MEDIUM findings can be resolved without architectural redesign.
 
 ## 19. Quality Scorecard
 
 | Dimension | Score |
 | --------- | ----: |
-| Scope clarity | 4 |
-| Terminology | 3 |
-| Requirement precision | 4 |
-| Interface completeness | 4 |
-| Data-contract completeness | 4 |
-| State/lifecycle definition | 3 |
-| Algorithm precision | 4 |
+| Scope clarity | 5 |
+| Terminology | 4 |
+| Requirement precision | 3 |
+| Interface completeness | 3 |
+| Data-contract completeness | 3 |
+| State/lifecycle definition | 2 |
+| Algorithm precision | 3 |
 | Failure semantics | 3 |
-| Edge-case coverage | 3 |
-| Non-functional requirements | 3 |
-| Security specification | 3 |
-| Observability/provenance | 3 |
-| Testability | 4 |
-| Evaluation/metrics | 4 |
+| Edge-case coverage | 4 |
+| Non-functional requirements | 2 |
+| Security specification | 2 |
+| Observability/provenance | 4 |
+| Testability | 3 |
+| Evaluation/metrics | 3 |
 | Traceability | 4 |
-| Internal consistency | 3 |
+| Internal consistency | 2 |
 | Architecture consistency | 4 |
-| Implementation readiness | 3 |
+| Implementation readiness | 2 |
 
-Terminology drops from 4 to 3 for "opened" meaning two things (F-063). Failure semantics stays at 3: the E-03 model is right but not built (F-062). All other scores are unchanged from the third pass; the surfaces they cover were re-verified rather than re-scored.
+Scale: 0 = absent; 1 = seriously deficient; 2 = weak; 3 = adequate; 4 = strong; 5 = implementation-grade.
 
 ## 20. Remediation Plan
 
 ### P0 — Blocking
 
-- **F-062** — mark E-03/R-04 *open defect* (decode in `loadFile` before `history.add`) or respecify; state what an empty file displays; extend T-39 and add the sidebar/⌘←/⌘0-to-missing-file case.
-- **F-063** — split add routes from select routes in R-01 and §3.1; reword R-20 ("most recently added first") and R-26 ("on add and on launch"); decide the deleted-row snapshot rule; add T-25/T-24 steps.
+1. **F-076:** define startup behavior for an unreadable persisted history head and align R-40, §3.1, E-03, Figure 3.1, and T-28.
+2. **F-077:** decide the cold-start argument/back-stack outcome and turn T-28 into an assertion.
+3. **F-078:** define bookmark/placeholder exceptions to R-18's general push rule.
+4. **F-079:** reconcile I-003 with the remote-image network exception and state permitted request data.
+5. **F-080:** bound untrusted resource consumption or narrow the universal no-crash guarantee.
+6. **F-081:** make exact-tag release provenance unambiguous and add a positive artifact test.
+7. **F-082:** specify the render harness and corpus as an executable verification contract.
 
 ### P1 — Important
 
-- **F-064** — prune the index on eviction (open defect) or narrow R-26; add the 101-file search step to T-25.
-- **F-065** — decide whether fences zoom; state it in R-30 and T-11; if they should, mark open defect with the cache-key note.
-- **F-066** — add the prompt-aware fence set to C-05.
-- **F-067** — replace K-13's sentence with the formula; fix T-18's expected width.
-- **F-068** — correct C-07.1's host rule and K-08's mode rule.
+1. **F-083:** align I-013 with “most recently added.”
+2. **F-084:** use one raster-width formula, including the lower bound.
+3. **F-085:** define empty in-document find behavior.
+4. **F-086:** define path-plus-fragment navigation and percent-decoding.
+5. **F-087:** define fingerprint Unicode normalization and truncation units.
+6. **F-088:** add a stable FTS rank tie-breaker.
+7. **F-089:** verify every C-04 preference and invalid stored value.
+8. **F-090:** correct T-11 and state zoom tie rounding.
+9. **F-091:** make the CPU criterion reproducible or non-normative.
 
 ### P2 — Improvement
 
-- **F-069..F-075** — one clause each; move the as-built commit pointer with each version.
+1. **F-092:** synchronize Figure 3.1 with E-21.
+2. **F-093:** normalize mathematical notation in normative rows and tests.
 
 ## 21. Final Verdict
 
-```text
 Specification maturity:
 Level 2
 
 Implementation readiness:
-READY WITH MINOR FIXES
+NOT READY
 
 Primary blocker:
-The loading path is specified from intent, not from the code — an undecodable file is meant to abort the load (E-03) but as built gets a history row and an empty window (F-062), and three of the open routes never add a row or re-index although §3.1 says every load does (F-063).
+Startup and navigation semantics still contain contradictory or deliberately unresolved state transitions.
 
 Most important improvement:
-Give ContentView one open(entry, mode:) entry point that §3.1 can cite, split the LOADING row into add and select routes, and pin the five MEDIUM rules (index eviction, fence zoom, prompt-aware fences, column-width formula, $$ host) so that the fifth pass has no loading-path claim left to verify by reading code.
-```
+Resolve the seven P0 decisions and convert their acceptance rows from observations into deterministic pass/fail assertions.
