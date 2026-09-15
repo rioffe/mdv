@@ -563,7 +563,7 @@ extension MDVTheme {
                 // menu. Font + colors are set inside MDVCodeSyntaxHighlighter —
                 // the configuration.label here is the Text we produced and we
                 // don't apply markdownTextStyle font/size on top of it.
-                CodeBlockChrome(configuration: configuration, theme: self)
+                CodeBlockChrome(configuration: configuration, theme: self, scale: scale)
                     .markdownMargin(top: 0, bottom: 16)
             }
             .listItem { configuration in

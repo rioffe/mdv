@@ -68,6 +68,7 @@ final class CodeRenderer {
     private struct CacheKey: Hashable {
         let lang: SupportedLanguage?     // nil → unknown / no grammar
         let themeID: String
+        let fontSize: CGFloat            // base × zoom × 0.85 — zoom is part of the key (SPEC C-05)
         let codeHash: Int
     }
     private var cache: [CacheKey: AttributedString] = [:]
@@ -76,13 +77,15 @@ final class CodeRenderer {
     /// Render a fenced code block. Always returns *something* — a plain
     /// monospaced AttributedString in theme `plain` color if no grammar
     /// matches, the query fails to load, or parsing errors out.
-    func render(code: String, languageHint: String?, theme: MDVTheme) -> AttributedString {
+    /// `scale` is the reader's zoom factor (R-30): fenced code follows it
+    /// like body text, at 0.85 × the scaled base size.
+    func render(code: String, languageHint: String?, theme: MDVTheme, scale: CGFloat = 1.0) -> AttributedString {
         let lang = SupportedLanguage.resolve(languageHint)
         let palette = theme.resolvedCodePalette
-        let fontSize = round(theme.baseFontSize * 0.85 * 100) / 100
+        let fontSize = round(theme.baseFontSize * scale * 0.85 * 100) / 100
 
         lock.lock()
-        let key = CacheKey(lang: lang, themeID: theme.id, codeHash: code.hashValue)
+        let key = CacheKey(lang: lang, themeID: theme.id, fontSize: fontSize, codeHash: code.hashValue)
         if let cached = cache[key] {
             lock.unlock()
             return cached
@@ -204,16 +207,17 @@ final class CodeRenderer {
 /// `CodeRenderer` is fast enough to handle that without bouncing async.
 struct MDVCodeSyntaxHighlighter: CodeSyntaxHighlighter {
     let theme: MDVTheme
+    var scale: CGFloat = 1.0
 
     func highlightCode(_ content: String, language: String?) -> Text {
-        let attr = CodeRenderer.shared.render(code: content, languageHint: language, theme: theme)
+        let attr = CodeRenderer.shared.render(code: content, languageHint: language, theme: theme, scale: scale)
         return Text(attr)
     }
 }
 
 extension CodeSyntaxHighlighter where Self == MDVCodeSyntaxHighlighter {
-    static func mdv(theme: MDVTheme) -> Self {
-        MDVCodeSyntaxHighlighter(theme: theme)
+    static func mdv(theme: MDVTheme, scale: CGFloat = 1.0) -> Self {
+        MDVCodeSyntaxHighlighter(theme: theme, scale: scale)
     }
 }
 
@@ -230,6 +234,7 @@ extension CodeSyntaxHighlighter where Self == MDVCodeSyntaxHighlighter {
 struct CodeBlockChrome: View {
     let configuration: CodeBlockConfiguration
     let theme: MDVTheme
+    var scale: CGFloat = 1.0
 
     @State private var hovering = false
     @State private var wrap = false
@@ -277,7 +282,8 @@ struct CodeBlockChrome: View {
                 content: configuration.content,
                 displayLanguage: displayLanguage,
                 theme: theme,
-                palette: palette
+                palette: palette,
+                scale: scale
             )
         } else {
             VStack(alignment: .leading, spacing: 0) {

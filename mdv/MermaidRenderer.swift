@@ -44,6 +44,7 @@ struct MermaidCodeBlockChrome: View {
     let displayLanguage: String
     let theme: MDVTheme
     let palette: CodePalette
+    var scale: CGFloat = 1.0
 
     @State private var hovering = false
     @State private var showSource = false
@@ -167,7 +168,7 @@ struct MermaidCodeBlockChrome: View {
 
     @ViewBuilder
     private var sourceContent: some View {
-        let body = Text(CodeRenderer.shared.render(code: content, languageHint: "mermaid", theme: theme))
+        let body = Text(CodeRenderer.shared.render(code: content, languageHint: "mermaid", theme: theme, scale: scale))
             .fixedSize(horizontal: false, vertical: true)
             .relativeLineSpacing(.em(0.225))
             .padding(.horizontal, 16)
