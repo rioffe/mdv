@@ -379,7 +379,11 @@ enum MermaidWebRenderer {
         window.isReleasedWhenClosed = false
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 400), configuration: config)
         window.contentView = webView
-        window.makeKeyAndOrderFront(nil)
+        // Deliberately *not* ordered front: this path asks WebKit for a PDF,
+        // which it paints itself, so the render server never has to composite
+        // the window — and an un-ordered window is never drawn, so the print
+        // job no longer flashes a diagram-sized rectangle across the screen.
+        // (The snapshot path below still needs one; see its comment.)
         webView.loadHTMLString(
             MermaidWebView.buildHTML(source: source, theme: theme, chrome: false),
             baseURL: nil
@@ -434,6 +438,10 @@ enum MermaidWebRenderer {
         // SIGSEGV in `-[_NSWindowTransformAnimation dealloc]` during a
         // CoreAnimation commit). ARC owns this window; AppKit must not.
         window.isReleasedWhenClosed = false
+        // `makeKeyAndOrderFront` is load-bearing here and only here: a webview
+        // whose window was never ordered front is never composited by the
+        // render server, and its snapshot comes back blank. That is also why
+        // this fallback (and not the PDF path) is the one that can flash.
         window.makeKeyAndOrderFront(nil)
         // Same HTML/JS as the on-screen path (chrome-less variant): without
         // this the webview stays blank, no height ever gets reported, and
