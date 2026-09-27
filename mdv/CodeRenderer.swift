@@ -44,8 +44,7 @@ final class CodeRenderer {
         /// Resolve a fence info string (`go`, `js`, `Rust`, `sh`, …) to a
         /// supported language, or nil if we don't have a grammar for it.
         static func resolve(_ rawHint: String?) -> SupportedLanguage? {
-            guard let raw = rawHint?.lowercased() else { return nil }
-            let stripped = raw.split(separator: " ", maxSplits: 1).first.map(String.init) ?? raw
+            guard let stripped = CodeRenderer.fenceWord(rawHint) else { return nil }
             if let direct = SupportedLanguage(rawValue: stripped) { return direct }
             switch stripped {
             case "js", "jsx", "javascriptreact", "node": return .javascript
@@ -61,12 +60,20 @@ final class CodeRenderer {
         }
     }
 
+    /// First word of a fence info string, lowercased
+    /// (`Python title=foo.py` → `python`).
+    static func fenceWord(_ rawHint: String?) -> String? {
+        guard let raw = rawHint?.lowercased() else { return nil }
+        return raw.split(separator: " ", maxSplits: 1).first.map(String.init) ?? raw
+    }
+
     private let lock = NSLock()
     private var languages: [SupportedLanguage: Language] = [:]
     private var queries: [SupportedLanguage: Query?] = [:]  // nil sentinel: tried + failed; don't retry
 
     private struct CacheKey: Hashable {
         let lang: SupportedLanguage?     // nil → unknown / no grammar
+        let isDiff: Bool
         let themeID: String
         let fontSize: CGFloat            // base × zoom × 0.85 — zoom is part of the key (SPEC C-05)
         let codeHash: Int
@@ -81,11 +88,12 @@ final class CodeRenderer {
     /// like body text, at 0.85 × the scaled base size.
     func render(code: String, languageHint: String?, theme: MDVTheme, scale: CGFloat = 1.0) -> AttributedString {
         let lang = SupportedLanguage.resolve(languageHint)
+        let isDiff = DiffHighlighter.fenceWords.contains(Self.fenceWord(languageHint) ?? "")
         let palette = theme.resolvedCodePalette
         let fontSize = round(theme.baseFontSize * scale * 0.85 * 100) / 100
 
         lock.lock()
-        let key = CacheKey(lang: lang, themeID: theme.id, fontSize: fontSize, codeHash: code.hashValue)
+        let key = CacheKey(lang: lang, isDiff: isDiff, themeID: theme.id, fontSize: fontSize, codeHash: code.hashValue)
         if let cached = cache[key] {
             lock.unlock()
             return cached
@@ -93,7 +101,10 @@ final class CodeRenderer {
         lock.unlock()
 
         let result: AttributedString
-        if let lang {
+        if isDiff {
+            result = DiffHighlighter.render(
+                code: code, palette: palette, hunkHeaderColor: theme.secondaryText, fontSize: fontSize)
+        } else if let lang {
             result = highlight(code: code, language: lang, palette: palette, fontSize: fontSize)
         } else {
             result = plainAttributedString(code: code, palette: palette, fontSize: fontSize)
