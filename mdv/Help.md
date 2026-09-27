@@ -17,6 +17,7 @@ A "totally solved problem in computer science" rendered into a window. Here is w
 - Click a link to a sibling `.md` in the same directory — it loads. Click an `https://` link — it goes to your browser, where it belongs.
 - `#fragment` links scroll to the matching heading. `[See above](#earlier-section)` actually does that.
 - **↓** / **↑** scroll a few lines. **Page Down** / **Page Up** and **space** / **⇧space** go a screen at a time. **Home** / **End** go to the top and the bottom. They work whether or not you have clicked into the text first, which is the entire point.
+- Come back to a file and you are where you left off. The scroll position is saved per file and checked against the file's modification time, so a file that changed under you opens at the top instead of somewhere random.
 
 ## Find
 
@@ -37,15 +38,50 @@ Every program eventually evolves bookmarks. We did not fight it.
 - **TOC** — h1/h2/h3 headings, click to jump. Toggle from the toolbar; drag its left edge to resize (the width is remembered).
 - **History** — every file you have opened, ever, until you swipe one left and tap delete. Survives restart.
 
-## Themes
+## Rendered Markdown
 
-A frustrated, untalented graphic designer (the author) could not resist letting two LLMs argue with him about typography. The result is several themes. Pick one from the toolbar. Do not @ me about font choices.
+- Tables are tables. Task lists are checkboxes. Headings get heading type.
+  This is the boring part and it works.
+- Code blocks are highlighted by tree-sitter: bash, C, Go, JavaScript, Python,
+  Ruby, Rust, TOML, YAML. Hover one for wrap and copy; right-click for the
+  same, plus **Copy Without Prompts** on shell blocks that have prompts in
+  them.
+- `diff` blocks tint the added and removed lines instead of pretending a diff
+  is a syntax.
+- Images beside the document load from the document's own directory. `data:`
+  URIs work. `http(s)` images are blocked by default and render as a
+  clickable placeholder — click it and the View menu opens under your cursor
+  at **Load Remote Images**.
+
+## Frontmatter
+
+- A YAML (`---`) or TOML (`+++`) metadata header is metadata, not prose, so it
+  does not render as prose: you get a properties table above the document.
+- **View → Show Frontmatter** hides the header instead, if you would rather
+  see the file exactly as it is on disk. The setting persists.
 
 ## Diagrams and math
 
-- ` ```mermaid ` fences render as diagrams. Hover for the toolbar: switch style, show the source, export a PNG.
+- `` ```mermaid `` fences render as diagrams. Hover for the toolbar: switch style, show the source, export a PNG.
 - Flowcharts, sequence diagrams, class diagrams, ER diagrams, state diagrams, and XY charts render natively. Gantt charts and other diagram types render via a bundled mermaid.js — same toolbar, slightly slower first load.
 - `$…$` renders inline LaTeX math and `$$…$$` renders a display equation, typeset natively in Latin Modern Math. Right-click a display equation to copy its LaTeX. `\$` and dollars in code stay dollars; "$5 and $10" stays prose.
+
+## Printing
+
+**⌘P** prints the document through the ordinary macOS print panel, whose **PDF** dropdown is also Save as PDF. That is the entire PDF feature.
+
+- Text prints as text — vector glyphs, not a screenshot of your window.
+- LaTeX prints as typeset math. Mermaid diagrams print as diagrams. A diagram that fails to render prints as its source rather than as an empty box.
+- Page breaks land in the gaps between blocks, instead of through the middle of a line of text.
+- Printed type is set smaller than screen type — 12pt in the 7-inch column a Letter page leaves after margins — because screen type is tuned for a screen, and 16pt reads as large print on paper. Zoom does not change it.
+
+## Themes and preferences
+
+A frustrated, untalented graphic designer (the author) could not resist letting two LLMs argue with him about typography. The result is several themes. Pick one from the toolbar. Do not @ me about font choices.
+
+- **⌘=** / **⌘-** zoom the document's type — body, headings, code, math. **View → Actual Size** puts it back. Zoom is a reading preference: it does not change what prints.
+- **View → Smart Typography** — the curly quotes, em dashes and ellipses pass. Some themes opt out; when the current one does, the menu item says so and greys out.
+- **View → Load Remote Images** — the `http(s)` image opt-in. Off by default, because a viewer should not fetch arbitrary URLs on your behalf without being asked.
 
 ## Editor integration
 
