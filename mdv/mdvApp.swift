@@ -30,6 +30,14 @@ struct mdvApp: App {
     /// the ContentView's @AppStorage 1:1.
     @AppStorage("mdv_sidebar_collapsed") private var sidebarCollapsed: Bool = false
 
+    /// Mirror of the sidebar selection (the open file's path, empty for
+    /// none), so the File menu can enable/disable its Close items. Same
+    /// @AppStorage mirroring as `sidebarCollapsed` above: one line at each
+    /// end for a single-window app, where a FocusedValue key would need a
+    /// key type, an extension, and a scene-value modifier to say the same
+    /// thing.
+    @AppStorage("mdv_selected_path") private var selectedPath: String = ""
+
     init() {
         // Register the bundled Alegreya weights into the process-local font
         // space before any view hierarchy resolves a custom font name. Done
@@ -84,6 +92,28 @@ struct mdvApp: App {
                 }
                 .keyboardShortcut("p", modifiers: .command)
             }
+            // Replaces the default File → Close, which closed the only
+            // window and left the app running with nothing on screen. ⌘W
+            // now closes the open *file* (the sidebar entry, like a tab)
+            // and ⇧⌘W closes the window — the standard macOS split once
+            // ⌘W means close-tab.
+            CommandGroup(replacing: .saveItem) {
+                Button("Close File") {
+                    NotificationCenter.default.post(name: .closeFile, object: nil)
+                }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(selectedPath.isEmpty)
+                Button("Close Window") {
+                    NSApp.keyWindow?.performClose(nil)
+                }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                Divider()
+                Button("Close All") {
+                    NotificationCenter.default.post(name: .closeAllFiles, object: nil)
+                }
+                .keyboardShortcut("w", modifiers: [.command, .option])
+                .disabled(history.entries.isEmpty)
+            }
             CommandGroup(after: .pasteboard) {
                 Divider()
                 Button("Find…") {
@@ -104,6 +134,20 @@ struct mdvApp: App {
                     NotificationCenter.default.postToKeyWindow(.navigateForward, object: nil)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: .command)
+                Divider()
+                // Step the sidebar list itself, in list order. ⌃⇥ / ⌃⇧⇥ are
+                // bound to the same pair by a key monitor in ContentView,
+                // since a menu item can only carry one key equivalent.
+                Button("Next File") {
+                    NotificationCenter.default.post(name: .nextFile, object: nil)
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(!hasNextFile)
+                Button("Previous File") {
+                    NotificationCenter.default.post(name: .previousFile, object: nil)
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(!hasPreviousFile)
             }
             // View menu addition: Smart Typography toggle. Sits in the
             // SwiftUI-generated View menu (CommandGroup(after: .toolbar)).
@@ -186,6 +230,24 @@ struct mdvApp: App {
                 }
             }
         }
+    }
+
+    /// Row of the open file in the sidebar list, or nil when nothing is
+    /// open. Drives the Next / Previous File enabled state, which clamps
+    /// at both ends of the list rather than wrapping.
+    private var selectedIndex: Int? {
+        guard !selectedPath.isEmpty else { return nil }
+        return history.entries.firstIndex { $0.path == selectedPath }
+    }
+
+    private var hasNextFile: Bool {
+        guard let i = selectedIndex else { return false }
+        return i + 1 < history.entries.count
+    }
+
+    private var hasPreviousFile: Bool {
+        guard let i = selectedIndex else { return false }
+        return i > 0
     }
 
     private func bookmarkSlotLabel(n: Int, bookmark: Bookmark?) -> String {
@@ -280,4 +342,8 @@ extension Notification.Name {
     static let navigateForward = Notification.Name("navigateForward")
     static let toggleSidebar = Notification.Name("toggleSidebar")
     static let printDocument = Notification.Name("printDocument")
+    static let closeFile = Notification.Name("closeFile")
+    static let closeAllFiles = Notification.Name("closeAllFiles")
+    static let nextFile = Notification.Name("nextFile")
+    static let previousFile = Notification.Name("previousFile")
 }

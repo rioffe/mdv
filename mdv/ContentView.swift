@@ -52,6 +52,13 @@ struct ContentView: View {
     /// chevron button on the drag handle, or the matching expand chevron
     /// in the left edge gutter when collapsed.
     @AppStorage("mdv_sidebar_collapsed") private var sidebarCollapsed: Bool = false
+    /// Mirror of `selectedEntry`'s path, written on every selection change
+    /// so the File menu's Close items can see whether a file is open. App
+    /// scope can't read view @State; this is the same mirroring trick as
+    /// `sidebarCollapsed`.
+    @AppStorage("mdv_selected_path") private var selectedPath: String = ""
+    /// Drives the Close All confirmation sheet, raised by `.closeAllFiles`.
+    @State private var showCloseAllConfirm = false
     /// Tracks hover on the collapsed-state edge gutter so the expand
     /// chevron only reveals when the mouse approaches the left edge.
     @State private var edgeGutterHovered = false
@@ -236,6 +243,7 @@ struct ContentView: View {
     @State private var currentMatchIndex: Int = 0
     @State private var findFieldRequestFocus: Bool = false
     @StateObject private var keyMonitor = KeyMonitor()
+    @StateObject private var fileStepMonitor = FileStepMonitor()
 
     // Global (cross-history) search
     @State private var globalQuery: String = ""
@@ -312,6 +320,35 @@ struct ContentView: View {
         deinit { uninstall() }
     }
 
+    /// ⌃⇥ / ⌃⇧⇥ as a second binding for Next / Previous File. A SwiftUI
+    /// menu item carries exactly one key equivalent, and the Navigate menu
+    /// already spends it on ⇧⌘] / ⇧⌘[, so the Tab pair comes from a local
+    /// key monitor instead. Only Control-modified Tab is swallowed —
+    /// unmodified Tab still reaches whatever has focus (the find bar and
+    /// the history search field both live on it).
+    final class FileStepMonitor: ObservableObject {
+        private var monitor: Any?
+
+        func install(step: @escaping (Int) -> Void) {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 48,
+                      event.modifierFlags.contains(.control) else { return event }
+                step(event.modifierFlags.contains(.shift) ? -1 : 1)
+                return nil
+            }
+        }
+
+        func uninstall() {
+            if let m = monitor {
+                NSEvent.removeMonitor(m)
+                monitor = nil
+            }
+        }
+
+        deinit { uninstall() }
+    }
+
 
     private let minSidebarWidth: CGFloat = 180
     private let maxSidebarWidth: CGFloat = 400
@@ -359,6 +396,16 @@ struct ContentView: View {
                   prev.path != selectedEntry?.path else { return }
             backStack.append(NavSnapshot(entry: prev, topBlockIndex: leavingTop))
             forwardStack.removeAll()
+        }
+        .confirmationDialog(
+            "Close all files?",
+            isPresented: $showCloseAllConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Close All", role: .destructive) { closeAllFiles() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This clears the sidebar history and the search index.")
         }
     }
 
@@ -413,7 +460,11 @@ struct ContentView: View {
             navigateBack: goBack,
             navigateForward: goForward,
             toggleSidebar: toggleSidebar,
-            printDocument: printCurrentDocument
+            printDocument: printCurrentDocument,
+            closeFile: closeFile,
+            closeAllFiles: requestCloseAll,
+            nextFile: { stepFile(by: 1) },
+            previousFile: { stepFile(by: -1) }
         ))
         .onOpenURL { url in
             // `AppDelegate.application(_:open:)` normally takes open events;
@@ -444,6 +495,7 @@ struct ContentView: View {
             bookmarkNavInProgress = false
             loadCurrentEntry()
             lastLoadedEntry = selectedEntry
+            selectedPath = selectedEntry?.path ?? ""
         }
         .onChange(of: rawMarkdown) { _ in
             if isSearching { recomputeMatches() }
@@ -544,6 +596,7 @@ struct ContentView: View {
         .onAppear {
             paneTracker.sidebarRightEdge = sidebarCollapsed ? 0 : (sidebarWidth + 8) // include drag handle width
             paneTracker.install()
+            fileStepMonitor.install { stepFile(by: $0) }
             if let url = initialURL {
                 loadFile(url)
             } else if let last = history.entries.first, select(last) {
@@ -552,6 +605,13 @@ struct ContentView: View {
                 // load explicitly (selecting route: history untouched).
                 loadCurrentEntry()
                 lastLoadedEntry = last
+                selectedPath = last.path
+            } else {
+                // Nothing to open. The selection mirror persists across
+                // launches, so clear it explicitly — no selection change
+                // fires here to do it for us, and a stale path would leave
+                // File → Close File enabled over an empty window.
+                selectedPath = ""
             }
         }
         .onDisappear {
@@ -561,6 +621,7 @@ struct ContentView: View {
                 persistScrollPosition(for: entry)
             }
             paneTracker.uninstall()
+            fileStepMonitor.uninstall()
         }
         .onChange(of: sidebarWidth) { newValue in
             if !sidebarCollapsed {
@@ -976,13 +1037,58 @@ struct ContentView: View {
 
     private func delete(_ entry: HistoryEntry) {
         let wasSelected = selectedEntry?.id == entry.id
+        // The file is leaving the sidebar for good, so drop it from the
+        // nav stacks too — otherwise ⌘← walks back into a file the list
+        // no longer shows (and `history.remove` has already deleted its
+        // saved scroll position). Match on path: revisits mint a fresh
+        // HistoryEntry id, so old snapshots of the same file differ by id.
+        backStack.removeAll { $0.entry.path == entry.path }
+        forwardStack.removeAll { $0.entry.path == entry.path }
         history.remove(entry)
         // A removed row's snapshots go with it (SPEC R-18) so ⌘← never
         // shows a document that has no history row.
         backStack.removeAll { $0.entry.path == entry.path }
         forwardStack.removeAll { $0.entry.path == entry.path }
         if wasSelected {
+            // Two bits of leaving-the-file bookkeeping the selection
+            // onChange handlers would otherwise get wrong here:
+            //   - `lastLoadedEntry` drives persistScrollPosition. The row
+            //     it would write was just deleted by `history.remove`, so
+            //     saving one back leaves an orphan. Clearing it skips that
+            //     branch; the handler re-arms it from the new selection.
+            //   - closing a file isn't a navigation, so suppress the
+            //     back-stack push (the handler clears the flag).
+            lastLoadedEntry = nil
+            suppressBackStackPush = true
             if let next = history.entries.first, select(next) { return }
+            selectedEntry = nil
+        }
+    }
+
+    /// File → Close File (⌘W). Takes the same path as the swipe / context
+    /// menu delete, so the next sidebar entry becomes current — or the
+    /// empty state shows when that was the last file.
+    private func closeFile() {
+        guard let entry = selectedEntry else { return }
+        delete(entry)
+    }
+
+    /// File → Close All (⌥⌘W). Destructive enough to confirm first.
+    private func requestCloseAll() {
+        guard !history.entries.isEmpty else { return }
+        showCloseAllConfirm = true
+    }
+
+    private func closeAllFiles() {
+        backStack.removeAll()
+        forwardStack.removeAll()
+        history.clear()
+        // Same bookkeeping as `delete`: `history.clear` has already dropped
+        // every saved scroll position, so don't let the selection change
+        // write one back, and don't push the cleared file onto the stack.
+        if selectedEntry != nil {
+            lastLoadedEntry = nil
+            suppressBackStackPush = true
             selectedEntry = nil
         }
     }
@@ -2292,6 +2398,20 @@ struct ContentView: View {
         return nil
     }
 
+    /// ⇧⌘] / ⇧⌘[ (and ⌃⇥ / ⌃⇧⇥): move the selection one row down or up
+    /// the sidebar, clamped at both ends — no wrap. Assigning
+    /// `selectedEntry` is exactly the sidebar-click path: unlike `loadFile`
+    /// it never calls `history.add`, so stepping doesn't hoist each file to
+    /// the top of the list and reorder it under the user mid-walk.
+    private func stepFile(by offset: Int) {
+        guard let current = selectedEntry,
+              let idx = history.entries.firstIndex(where: { $0.path == current.path })
+        else { return }
+        let target = idx + offset
+        guard target >= 0, target < history.entries.count else { return }
+        selectedEntry = history.entries[target]
+    }
+
     /// Push a snapshot of the current view onto `backStack` for a
     /// within-document jump (TOC click, same-doc fragment link). Clears
     /// the forward stack — a fresh jump branches the history. No-op when
@@ -3314,6 +3434,10 @@ private struct NotificationHandlers: ViewModifier {
     let navigateForward: () -> Void
     let toggleSidebar: () -> Void
     let printDocument: () -> Void
+    let closeFile: () -> Void
+    let closeAllFiles: () -> Void
+    let nextFile: () -> Void
+    let previousFile: () -> Void
 
     /// Commands are process-wide notifications; every window's ContentView
     /// subscribes. Only the window the command is addressed to acts (SPEC
@@ -3339,6 +3463,13 @@ private struct NotificationHandlers: ViewModifier {
     }
 
     func body(content: Content) -> some View {
+        secondHalf(firstHalf(content))
+    }
+
+    /// The chain is split in two for the same reason it was lifted out of
+    /// `body` in the first place: one straight run of every `.onReceive`
+    /// exceeds the type-checker's expression-complexity budget.
+    private func firstHalf<V: View>(_ content: V) -> some View {
         content
             .onReceive(publisher(.toggleSidebar)) { _ in toggleSidebar() }
             .onReceive(publisher(.openFile)) { _ in openFile() }
@@ -3360,6 +3491,14 @@ private struct NotificationHandlers: ViewModifier {
             .onReceive(publisher(.navigateBack)) { _ in navigateBack() }
             .onReceive(publisher(.navigateForward)) { _ in navigateForward() }
             .onReceive(publisher(.printDocument)) { _ in printDocument() }
+    }
+
+    private func secondHalf<V: View>(_ content: V) -> some View {
+        content
+            .onReceive(publisher(.closeFile)) { _ in closeFile() }
+            .onReceive(publisher(.closeAllFiles)) { _ in closeAllFiles() }
+            .onReceive(publisher(.nextFile)) { _ in nextFile() }
+            .onReceive(publisher(.previousFile)) { _ in previousFile() }
     }
 }
 
