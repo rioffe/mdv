@@ -116,18 +116,8 @@ struct MermaidWebView: NSViewRepresentable {
         webView.loadHTMLString(html, baseURL: nil)
     }
 
-    static func buildHTML(
-        source: String,
-        theme: MDVTheme,
-        chrome: Bool = true,
-        zoom: CGFloat = 1
-    ) -> String {
+    static func buildHTML(source: String, theme: MDVTheme, chrome: Bool = true) -> String {
         let mermaidTheme = theme.isDark ? "dark" : "default"
-        // Print renders the page larger and scales it back down — the layout is
-        // identical (the SVG is `max-width: 100%` of a zoomed viewport, so it
-        // still lays out `width` CSS px wide) but every glyph is rasterized at
-        // `zoom` times the pixels. Screen passes 1.
-        let zoomRule = zoom > 1 ? "body { zoom: \(zoom); }" : ""
         let pollFallback = chrome ? "" : """
             // Print path: the offscreen window may never receive animation
             // frames, so the double-rAF report above can starve. Timers
@@ -163,7 +153,6 @@ struct MermaidWebView: NSViewRepresentable {
           html, body { background: \(bgCSS); }
           .mermaid { padding: \(chrome ? "12px 18px" : "0"); }
           .mermaid svg { max-width: 100%; height: auto; display: block; }
-          \(zoomRule)
         </style>
         </head>
         <body>
@@ -367,13 +356,13 @@ enum MermaidWebRenderer {
             backing: .buffered,
             defer: false
         )
-        // What the snapshot will come back at is the *window's* backing scale,
-        // which need not be `NSScreen.main`'s — ask the window, and render the
-        // page `zoom` times larger to make up the difference.
+        // How much bigger than one point per pixel the capture should be. The
+        // page itself is never re-laid-out — zooming the body changed mermaid's
+        // own layout, which clipped a Gantt chart's labels — only the snapshot
+        // is taken wider, and the point size below puts the pixels back.
         let backing = max(window.backingScaleFactor, 1)
         let zoom = max(1, density / backing)
-        let renderWidth = width * zoom
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: renderWidth, height: 400), configuration: config)
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 400), configuration: config)
         window.contentView = webView
         // Programmatically created NSWindows default to
         // `isReleasedWhenClosed == true`, which makes `close()` perform a raw
@@ -387,10 +376,10 @@ enum MermaidWebRenderer {
         // this the webview stays blank, no height ever gets reported, and
         // every web-path diagram falls back to printing its source.
         webView.loadHTMLString(
-            MermaidWebView.buildHTML(source: source, theme: theme, chrome: false, zoom: zoom),
+            MermaidWebView.buildHTML(source: source, theme: theme, chrome: false),
             baseURL: nil
         )
-        NSLog("MDV_SELFTEST: web render started (width \(renderWidth), zoom \(zoom))")
+        NSLog("MDV_SELFTEST: web render started (width \(width), zoom \(zoom))")
 
         let height = await handler.waitForHeight(timeout: 5)
         NSLog("MDV_SELFTEST: height reported: \(height.map { String(format: "%.1f", $0) } ?? "timeout")")
@@ -401,10 +390,10 @@ enum MermaidWebRenderer {
         // The SVG lays out at the webview width (max-width: 100%), which
         // never changed; resizing only trims the empty body below it. Give
         // the compositor one beat to settle before capturing.
-        webView.frame.size = NSSize(width: renderWidth, height: height)
-        window.setContentSize(NSSize(width: renderWidth, height: height))
+        webView.frame.size = NSSize(width: width, height: height)
+        window.setContentSize(NSSize(width: width, height: height))
         try? await Task.sleep(for: .milliseconds(200))
-        let cg = await handler.snapshot(webView)
+        let cg = await handler.snapshot(webView, width: width * zoom)
         NSLog("MDV_SELFTEST: snapshot \(cg == nil ? "nil" : "ok")")
         window.close()
         guard let cg else { return nil }
@@ -433,11 +422,14 @@ enum MermaidWebRenderer {
             await height.wait(timeout: timeout)
         }
 
-        func snapshot(_ webView: WKWebView) async -> CGImage? {
+        func snapshot(_ webView: WKWebView, width: CGFloat) async -> CGImage? {
             await withCheckedContinuation { continuation in
-                // macOS's snapshot API hands back an NSImage at the window's
-                // backing scale; collapse it to the backing CGImage.
-                webView.takeSnapshot(with: nil) { image, _ in
+                // `snapshotWidth` is in points and scales the capture, not the
+                // page, so a diagram can be captured at print resolution
+                // without disturbing how mermaid laid it out.
+                let config = WKSnapshotConfiguration()
+                config.snapshotWidth = NSNumber(value: Double(width))
+                webView.takeSnapshot(with: config) { image, _ in
                     let cg = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
                     continuation.resume(returning: cg)
                 }
