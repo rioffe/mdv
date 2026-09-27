@@ -340,13 +340,22 @@ enum MermaidWebRenderer {
     /// `zoom` times larger (`zoom` times the width, with the body zoomed by
     /// the same factor, which leaves the layout untouched) and the point size
     /// is derived from the pixels that come back.
+    /// `width` is the layout width the page is rendered at, which decides how
+    /// a diagram *lays itself out* — mermaid's own label sizes are fixed
+    /// pixels, so a Gantt chart laid out at a narrow width comes out with
+    /// labels that are huge relative to the page. `displayWidth` is the size
+    /// the result is drawn at; print lays a diagram out at the width the
+    /// screen would give it and draws it smaller, exactly as it does with type
+    /// and with formulas.
     static func image(
         source: String,
         theme: MDVTheme,
         width: CGFloat,
+        displayWidth: CGFloat? = nil,
         density: CGFloat = 2
     ) async -> NSImage? {
         let width = max(width, 1)
+        let displayWidth = max(displayWidth ?? width, 1)
         let config = WKWebViewConfiguration()
         let handler = SnapshotHandler()
         config.userContentController.add(handler, name: "mermaidHeight")
@@ -393,7 +402,7 @@ enum MermaidWebRenderer {
         webView.frame.size = NSSize(width: width, height: height)
         window.setContentSize(NSSize(width: width, height: height))
         try? await Task.sleep(for: .milliseconds(200))
-        let cg = await handler.snapshot(webView, width: width * zoom)
+        let cg = await handler.snapshot(webView, width: displayWidth * zoom)
         NSLog("MDV_SELFTEST: snapshot \(cg == nil ? "nil" : "ok")")
         window.close()
         guard let cg else { return nil }
@@ -401,8 +410,8 @@ enum MermaidWebRenderer {
         // the snapshot's own aspect — the snapshot's backing scale is whatever
         // the window got, which is not something to assume. The pixels carry
         // the resolution.
-        let pointHeight = CGFloat(cg.height) / CGFloat(max(cg.width, 1)) * width
-        return NSImage(cgImage: cg, size: NSSize(width: width, height: pointHeight))
+        let pointHeight = CGFloat(cg.height) / CGFloat(max(cg.width, 1)) * displayWidth
+        return NSImage(cgImage: cg, size: NSSize(width: displayWidth, height: pointHeight))
     }
 
     private final class SnapshotHandler: NSObject, WKScriptMessageHandler {

@@ -442,13 +442,22 @@ enum PrintController {
         // the pixels a printer can resolve. Screen-sized rasters (2 px/pt) are
         // what made a printed Gantt chart and typeset node labels look soft.
         let diagramWidth = max(contentWidth - 2 * 18 * typeScale, 1)
+        // Diagrams lay themselves out at the width the *screen's* column would
+        // give them and are drawn at `diagramWidth` — the same proportion the
+        // type and the formulas print at. A diagram's label sizes are absolute
+        // pixels, so laying one out at the narrow printed column is what makes
+        // its text tower over the prose beside it.
+        let diagramLayoutWidth = max(diagramWidth / typeScale, 1)
         var result = PrePass()
 
         for (idx, block) in request.blocks.enumerated() {
             if let source = mermaidSource(fromFencedBlock: block) {
                 if isBeautifulMermaidSupported(source) {
                     let key = MDVMermaidRenderKey(
-                        source: source, theme: request.theme, style: style, scale: printDiagramDensity
+                        source: source,
+                        theme: request.theme,
+                        style: style,
+                        scale: printDiagramDensity * typeScale
                     )
                     // `raster` at the print scale, rather than `image` (which is
                     // pinned to 2× for PNG export) — the layout is cached, only
@@ -456,8 +465,14 @@ enum PrintController {
                     if let prepared = await MDVMermaidImageCache.shared.prepared(
                         source: source, theme: request.theme, style: style, key: key
                     ), let image = await MDVMermaidImageCache.shared.raster(
-                        prepared, key: key, width: diagramWidth
+                        prepared, key: key, width: diagramLayoutWidth
                     ) {
+                        // Drawn smaller than it was laid out, so its labels come
+                        // out proportional to the printed type.
+                        image.size = NSSize(
+                            width: diagramWidth,
+                            height: image.size.height * typeScale
+                        )
                         result.images[idx] = image
                     } else {
                         result.failed.insert(idx)
@@ -465,7 +480,8 @@ enum PrintController {
                 } else if let image = await MermaidWebRenderer.image(
                     source: source,
                     theme: request.theme,
-                    width: diagramWidth,
+                    width: diagramLayoutWidth,
+                    displayWidth: diagramWidth,
                     density: printDiagramDensity
                 ) {
                     // Gantt, pie, & co.: the bundled mermaid.js path, rasterized
