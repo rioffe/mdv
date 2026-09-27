@@ -144,6 +144,9 @@ enum PrintController {
         /// Typeset LaTeX, per block and keyed by image source. Handed to the
         /// view tree through `\.resolvedInlineImages` — see `blockRoot`.
         var math: [Int: [String: Image]] = [:]
+        /// Blocks that are nothing but a `$$…$$` formula, drawn as vector
+        /// glyphs (see `standaloneFormula`).
+        var formulaPages: [Int: BlockPage] = [:]
     }
 
     /// Everything the print view tree needs for one block's markdown.
@@ -154,6 +157,68 @@ enum PrintController {
         /// The block contained at least one `$…$` / `$$…$$` span, i.e. its
         /// laid-out content depends on async image resolution.
         var hasMath: Bool { !specs.isEmpty }
+    }
+
+    /// A block that is nothing but one `$$…$$` formula, if that is what it is.
+    ///
+    /// Those are printed by drawing SwiftMath's own image into the block's
+    /// PDF page — the glyphs stay vector, so a standalone formula is as sharp
+    /// as the prose around it at any zoom and on any printer. Going through
+    /// MarkdownUI instead embeds a bitmap of it, which a viewer resampling
+    /// the page (Preview at fit-to-window, say) renders soft, and which is
+    /// what a reader notices most, because a display formula is large.
+    private static func standaloneFormula(_ source: BlockSource) -> MathSpec? {
+        guard source.specs.count == 1, let spec = source.specs.first, spec.display else { return nil }
+        // The whole block, nothing but the image reference the rewrite emitted.
+        return source.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == "!\([])(\(spec.url))" ? spec : nil
+    }
+
+    /// Draws one formula into a page-sized PDF, centred like `MathDisplayView`
+    /// centres it (`maxWidth: .infinity, alignment: .center`, 4pt of vertical
+    /// padding, scaled down to the column if it is wider than one).
+    private static func formulaPage(
+        for spec: MathSpec,
+        rendered: MathRendered,
+        width: CGFloat
+    ) -> BlockPage? {
+        // A formula SwiftMath could not parse keeps the MarkdownUI path,
+        // which prints the error and the source the way `MathDisplayView`
+        // does — not just the source, which is all this page would show.
+        guard rendered.error == nil else { return nil }
+        let image = rendered.vectorImage
+        let natural = image.size
+        guard natural.width > 0, natural.height > 0 else { return nil }
+        let scale = min(1, width / natural.width)
+        let drawn = CGSize(width: natural.width * scale, height: natural.height * scale)
+        // 4pt padding, which is what `MathDisplayView` puts around a display
+        // formula, and nothing else: MarkdownUI's measured height for such a
+        // block stopped at the image, so adding the paragraph's bottom margin
+        // here would space printed formulas differently from before.
+        let padding: CGFloat = 4
+        let size = CGSize(width: width, height: drawn.height + padding * 2)
+
+        let data = NSMutableData()
+        guard let consumer = CGDataConsumer(data: data as CFMutableData) else { return nil }
+        var mediaBox = CGRect(origin: .zero, size: size)
+        guard let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        ctx.beginPDFPage(nil)
+        NSGraphicsContext.saveGraphicsState()
+        // Not flipped: the page is y-up, and the block view puts the formula
+        // at the top of the page with 4pt of padding above it.
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        image.draw(in: NSRect(
+            x: (width - drawn.width) / 2,
+            y: size.height - padding - drawn.height,
+            width: drawn.width,
+            height: drawn.height
+        ))
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.endPDFPage()
+        ctx.closePDF()
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider),
+              let page = document.page(at: 1) else { return nil }
+        return BlockPage(document: document, page: page, size: size)
     }
 
     /// Mirrors the screen pipeline's order (`ContentView.blockView`): math
@@ -228,6 +293,13 @@ enum PrintController {
                 typeScale: printTypeScale(contentWidth: contentWidth, theme: request.theme)
             )
             guard source.hasMath else { continue }
+            if let spec = standaloneFormula(source) {
+                let rendered = await MathImageCache.shared.rendered(for: spec)
+                if let page = formulaPage(for: spec, rendered: rendered, width: contentWidth) {
+                    result.formulaPages[idx] = page
+                    continue
+                }
+            }
             // Typeset the block's formulas now and pass them to the view tree.
             // That tree is drawn by `ImageRenderer`, which runs no async work,
             // so MarkdownUI would otherwise skip every inline image it hasn't
@@ -350,6 +422,11 @@ enum PrintController {
                 if let render = renderBlockPDF(root: root, width: contentWidth) {
                     append(BlockPage(document: render.document, page: render.page, size: render.size))
                 }
+                continue
+            }
+
+            if let page = prepass.formulaPages[idx] {
+                append(page)
                 continue
             }
 

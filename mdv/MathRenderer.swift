@@ -426,15 +426,23 @@ extension MathMarkdown {
 // MARK: - Typesetting + cache
 
 final class MathRendered {
+    /// Baked bitmap — what SwiftUI draws (`Text(Image)` and `MathDisplayView`
+    /// resample handler-backed images, so the screen gets a bitmap at the
+    /// backing scale).
     let image: NSImage
+    /// SwiftMath's own drawing-handler image, kept unbaked. Drawing *this*
+    /// into a PDF context keeps the glyphs vector (measured: embedded fonts,
+    /// no image objects), which is how print renders a standalone formula.
+    let vectorImage: NSImage
     let ascent: CGFloat
     let descent: CGFloat
-    /// Parse error message, if SwiftMath rejected the LaTeX. `image` then
-    /// holds a plain-text rendering of the source so the span isn't lost.
+    /// Parse error message, if SwiftMath rejected the LaTeX. Both images then
+    /// hold a plain-text rendering of the source so the span isn't lost.
     let error: String?
 
-    init(image: NSImage, ascent: CGFloat, descent: CGFloat, error: String?) {
+    init(image: NSImage, vectorImage: NSImage, ascent: CGFloat, descent: CGFloat, error: String?) {
         self.image = image
+        self.vectorImage = vectorImage
         self.ascent = ascent
         self.descent = descent
         self.error = error
@@ -482,10 +490,17 @@ final class MathImageCache {
             // dynamic and keeps re-resolving the paragraph, which showed up as
             // a steady 10–20 % CPU on any page with inline math.
             let baked = rasterized(image, scale: spec.rasterScale ?? screenScale) ?? image
-            return MathRendered(image: baked, ascent: layout.ascent, descent: layout.descent, error: nil)
+            return MathRendered(
+                image: baked,
+                vectorImage: image,
+                ascent: layout.ascent,
+                descent: layout.descent,
+                error: nil
+            )
         }
         let message = error?.localizedDescription ?? "LaTeX could not be rendered"
-        return MathRendered(image: fallbackImage(for: spec), ascent: spec.fontSize, descent: 0, error: message)
+        let fallback = fallbackImage(for: spec)
+        return MathRendered(image: fallback, vectorImage: fallback, ascent: spec.fontSize, descent: 0, error: message)
     }
 
     private static func rasterized(_ image: NSImage, scale: CGFloat) -> NSImage? {
