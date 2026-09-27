@@ -36,17 +36,25 @@ import SwiftUI
 /// therefore vector text with formulas embedded at `printMathDensity`.
 @MainActor
 enum PrintController {
-    /// Print typography scale applied to body/heading/code type (see
-    /// `MDVTheme.markdownTheme(scale:forPrint:)` and `MDVCodeSyntaxHighlighter`).
+    /// How much smaller print type is than screen type, so that the printed
+    /// page reads like the window does.
     ///
-    /// The theme's `baseFontSize` (16pt) is tuned for the on-screen column
-    /// (≈700–900pt wide); on paper the text column is just 7in — 504pt at
-    /// the 54pt margins below — where 16pt/24pt reads as large print. 0.75
-    /// lands at 12pt body / 18pt leading, i.e. ordinary book density.
-    /// Em-relative leading and heading sizes follow; the theme's absolute
-    /// point margins (paragraph gaps, heading tops) deliberately don't, so
-    /// block rhythm stays put while the type gets denser.
-    private static let printTypeScale: CGFloat = 0.75
+    /// What has to match is the *measure* — characters per line — not the
+    /// point size: the screen sets `baseFontSize` (16pt) against the theme's
+    /// `articleMaxWidth` column (860pt, ≈95–100 characters), while paper
+    /// gives a 504pt column at Letter with the margins below. Set at the
+    /// screen's 16pt the printed line holds only ~80 characters, so the page
+    /// looks bigger and breaks paragraphs differently than the app does;
+    /// scaling by the ratio of the two column widths (≈0.59 → 9.4pt) puts
+    /// ~97 characters on both.
+    ///
+    /// Body, headings and code follow the result (em-relative sizes, and the
+    /// code-block scale); the theme's absolute point margins deliberately
+    /// don't, so block rhythm stays put while the type gets denser.
+    private static func printTypeScale(contentWidth: CGFloat, theme: MDVTheme) -> CGFloat {
+        guard let screenColumn = theme.articleMaxWidth, screenColumn > 0 else { return 1 }
+        return min(1, contentWidth / screenColumn)
+    }
 
     /// Pixels per point to bake printed formulas at. The page stays vector
     /// text, but SwiftUI rasterizes `Image(nsImage:)` even into a PDF context
@@ -155,12 +163,13 @@ enum PrintController {
         _ block: String,
         mermaidFailed: Bool,
         smartTypography: Bool,
-        theme: MDVTheme
+        theme: MDVTheme,
+        typeScale: CGFloat
     ) -> BlockSource {
         let source = mermaidFailed ? retagMermaidFence(block) : block
         let rewritten = MathMarkdown.rewritten(
             source,
-            fontSize: theme.baseFontSize * printTypeScale,
+            fontSize: theme.baseFontSize * typeScale,
             headingSizeEms: theme.headingSizeEms,
             color: NSColor(theme.text),
             rasterScale: printMathDensity
@@ -215,7 +224,8 @@ enum PrintController {
                 block,
                 mermaidFailed: result.failed.contains(idx),
                 smartTypography: request.smartTypography,
-                theme: request.theme
+                theme: request.theme,
+                typeScale: printTypeScale(contentWidth: contentWidth, theme: request.theme)
             )
             guard source.hasMath else { continue }
             // Typeset the block's formulas now and pass them to the view tree.
@@ -286,7 +296,7 @@ enum PrintController {
                 markdown: markdown,
                 mermaidImage: mermaidImage,
                 theme: theme,
-                scale: printTypeScale,
+                scale: printTypeScale(contentWidth: width, theme: theme),
                 baseURL: baseURL
             )
             .frame(width: width, alignment: .topLeading)
@@ -332,7 +342,7 @@ enum PrintController {
                     FrontmatterTableView(
                         rows: frontmatter,
                         theme: request.theme,
-                        fontScale: printTypeScale
+                        fontScale: printTypeScale(contentWidth: contentWidth, theme: request.theme)
                     )
                         .frame(width: contentWidth, alignment: .topLeading)
                         .environment(\.colorScheme, request.theme.isDark ? .dark : .light)
@@ -347,7 +357,8 @@ enum PrintController {
                 block,
                 mermaidFailed: prepass.failed.contains(idx),
                 smartTypography: request.smartTypography,
-                theme: request.theme
+                theme: request.theme,
+                typeScale: printTypeScale(contentWidth: contentWidth, theme: request.theme)
             )
             let root = blockRoot(
                 markdown: source.markdown,
@@ -467,15 +478,17 @@ private struct BlockPage {
 
 /// Print-side equivalent of ContentView.blockView: the plain Markdown path
 /// only (no find highlights, hover stripes, or selection tints), type size
-/// fixed at `printTypeScale` regardless of screen zoom, remote images forced
+/// fixed at `printTypeScale(_:theme:)` regardless of screen zoom, remote
+/// images forced
 /// to the blocked placeholder so nothing in the tree depends on async work.
 private struct PrintBlockView: View {
     let markdown: String
     let mermaidImage: NSImage?
     let theme: MDVTheme
-    /// `PrintController.printTypeScale` — body/heading/code type size for
-    /// paper. Fixed (never derived from the screen's `themes.fontScale`) so
-    /// printed output doesn't depend on the reader's on-screen zoom. A
+    /// `PrintController.printTypeScale(_:theme:)` — body/heading/code type
+    /// size for paper. Fixed (never derived from the screen's
+    /// `themes.fontScale`) so printed output doesn't depend on the reader's
+    /// on-screen zoom. A
     let scale: CGFloat
     let baseURL: URL?
 

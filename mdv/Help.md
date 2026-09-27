@@ -73,7 +73,7 @@ Every program eventually evolves bookmarks. We did not fight it.
 - Text prints as text — vector glyphs, not a screenshot of your window.
 - LaTeX prints as typeset math. Mermaid diagrams print as diagrams. A diagram that fails to render prints as its source rather than as an empty box.
 - Page breaks land in the gaps between blocks, instead of through the middle of a line of text.
-- Printed type is set smaller than screen type — 12pt in the 7-inch column a Letter page leaves after margins — because screen type is tuned for a screen, and 16pt reads as large print on paper. Zoom does not change it.
+- Printed type comes out smaller than screen type, on purpose: the app sets 16pt against its 860pt reading column, and a Letter page only leaves 504pt after margins, so the page is set at about 9½pt. That keeps a printed line about as long as a line in the window — the same words per line, the same paragraphs breaking in the same places. Zoom does not change it.
 
 ## Themes and preferences
 
