@@ -653,6 +653,20 @@ struct MathInlineImageProvider: InlineImageProvider {
     var baseURL: URL? = nil
 
     func image(with url: URL, label: String) async throws -> Image {
+        // A picture beside the document, inline in a sentence: load it here,
+        // the way the block provider does, instead of handing it to the network
+        // loader — which is what made an inline local image render in print and
+        // not on screen. MarkdownUI resolves a relative source against its own
+        // base URL, which is unset here, so do it against the document's.
+        if url.isFileURL, let image = NSImage(contentsOf: url) {
+            return Image(nsImage: image)
+        }
+        if url.scheme == nil, let baseURL {
+            let file = URL(fileURLWithPath: url.path, relativeTo: baseURL).standardizedFileURL
+            if let image = NSImage(contentsOf: file) {
+                return Image(nsImage: image)
+            }
+        }
         if let spec = HTMLImageSpec(url: url) {
             // A raw `<img>` in the middle of a paragraph. MarkdownUI draws
             // inline images itself, at the image's own point size, so the size

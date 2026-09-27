@@ -22,6 +22,11 @@ history sidebar with the rest.
 - [images.md](images.md) — relative paths, absolute paths, missing
   references, and a couple of inline data: URIs. Verifies the
   `LocalImageProvider`.
+- [raw-html-images.md](raw-html-images.md) — raw `<img>` tags: a sized
+  header image, width/height/neither, single-quoted and bare attribute
+  values, one inline in a sentence, a missing file, a remote source, and
+  the fences and inline code that must keep their HTML literal. Verifies
+  `RawHTMLImages` and the sizing shared by the screen and print.
 - [links.md](links.md) — every link shape: md-to-md (navigates
   in-app), URL (opens in browser), mailto, fragment, broken refs.
   Verifies the `OpenURLAction` interception.
@@ -75,7 +80,12 @@ history sidebar with the rest.
 5. **Bookmarks** — ⌘D in any block adds a bookmark. ⌘1–⌘9 jumps.
 6. **Images** — see [images.md](images.md). The relative one should
    render; the broken reference should show a "image not found"
-   placeholder.
+   placeholder. Raw `<img>` tags are [raw-html-images.md](raw-html-images.md).
+7. **Print** — ⌘P (or the panel's PDF dropdown) on
+   [math.md](math.md), [gantt.md](gantt.md) and
+   [raw-html-images.md](raw-html-images.md): formulas and diagrams should
+   come out as vector glyphs, not rasters, and the printed page should lay
+   out like the window.
 
 ## Notes
 

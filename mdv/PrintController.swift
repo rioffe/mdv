@@ -333,18 +333,29 @@ enum PrintController {
     ) -> [(source: String, image: NSImage)] {
         var sources: [String] = []
         var rest = Substring(markdown)
-        while let open = rest.range(of: "![](") {
-            guard let close = rest[open.upperBound...].firstIndex(of: ")") else { break }
-            sources.append(String(rest[open.upperBound..<close]))
-            rest = rest[rest.index(after: close)...]
+        while let open = rest.range(of: "![") {
+            // `![alt](url)`, `![](url)` — the alt may be anything.
+            guard let altClose = rest[open.upperBound...].range(of: "]("),
+                  let urlEnd = rest[altClose.upperBound...].firstIndex(of: ")") else { break }
+            sources.append(String(rest[altClose.upperBound..<urlEnd]))
+            rest = rest[rest.index(after: urlEnd)...]
         }
-        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        if sources.count == 1, trimmed == "![](\(sources[0]))" { return [] }
+        if sources.count == 1, isOnlyImage(markdown, source: sources[0]) { return [] }
         return sources.compactMap { source in
             guard !source.hasPrefix("\(MathSpec.scheme)://"),
                   let image = picture(for: source, baseURL: baseURL) else { return nil }
             return (source, image)
         }
+    }
+
+    /// Whether the block is nothing but one image reference — alt text
+    /// allowed. Those reach the block image provider, which loads
+    /// synchronously and always has printed, so the overlay leaves them alone.
+    private static func isOnlyImage(_ markdown: String, source: String) -> Bool {
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("!["), trimmed.hasSuffix("](\(source))") else { return false }
+        let alt = trimmed.dropFirst(2).dropLast(source.count + 2)
+        return !alt.contains("](") && !alt.contains("![")
     }
 
     /// Loads one inline picture: a raw `<img>` tag's `src` (resolved against the

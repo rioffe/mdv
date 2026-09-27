@@ -168,7 +168,9 @@ struct HTMLImageView: View {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(image.size.height > 0 ? image.size.width / image.size.height : 1, contentMode: .fit)
-                .frame(width: size.width, height: size.height)
+                // Caps, not fixed sizes: a picture larger than the column
+                // shrinks to it, the way every other image in a document does.
+                .frame(maxWidth: size.width, maxHeight: size.height)
                 .accessibilityLabel(spec.alt.isEmpty ? spec.src : spec.alt)
         } else {
             Text(spec.alt.isEmpty ? "Missing image: \(spec.src)" : spec.alt)
