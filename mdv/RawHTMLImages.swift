@@ -164,16 +164,11 @@ struct HTMLImageView: View {
 
     var body: some View {
         if let image {
-            let natural = image.size
-            let ratio = natural.height > 0 ? natural.width / natural.height : 1
-            // `width` wins; a lone `height` implies a width from the aspect;
-            // neither means the image's own size, which the column can still
-            // shrink — the caps, not fixed sizes, so nothing is stretched.
-            let width = spec.width ?? spec.height.map { $0 * ratio }
+            let size = spec.displaySize(natural: image.size)
             Image(nsImage: image)
                 .resizable()
-                .aspectRatio(ratio, contentMode: .fit)
-                .frame(maxWidth: width ?? natural.width, maxHeight: spec.height ?? natural.height)
+                .aspectRatio(image.size.height > 0 ? image.size.width / image.size.height : 1, contentMode: .fit)
+                .frame(width: size.width, height: size.height)
                 .accessibilityLabel(spec.alt.isEmpty ? spec.src : spec.alt)
         } else {
             Text(spec.alt.isEmpty ? "Missing image: \(spec.src)" : spec.alt)
@@ -184,6 +179,27 @@ struct HTMLImageView: View {
 }
 
 extension HTMLImageSpec {
+    /// The size to draw a picture at: `width` wins, a lone `height` derives the
+    /// width from the aspect, neither means the image's own size — all as caps,
+    /// never stretching. Used by both the view and the print pipeline, so a
+    /// picture occupies the same space either way.
+    func displaySize(natural: CGSize) -> CGSize {
+        guard natural.width > 0, natural.height > 0 else { return natural }
+        let ratio = natural.width / natural.height
+        if let width, let height {
+            return CGSize(width: min(width, height * ratio), height: min(height, width / ratio))
+        }
+        if let width {
+            let w = min(width, natural.width)
+            return CGSize(width: w, height: w / ratio)
+        }
+        if let height {
+            let h = min(height, natural.height)
+            return CGSize(width: h * ratio, height: h)
+        }
+        return natural
+    }
+
     /// The `src` resolved against the document, the same way `![…](…)` is.
     func resolvedURL(baseURL: URL?) -> URL {
         if let url = URL(string: src), url.scheme != nil { return url }

@@ -157,11 +157,11 @@ enum PrintController {
     private struct PrePass {
         var images: [Int: NSImage] = [:]
         var failed: Set<Int> = []
-        /// Typeset LaTeX, per block: same-size marker rectangles for the view
-        /// tree (`\.resolvedInlineImages`, so the layout reserves each
-        /// formula's place) plus the vector images to draw into those places
-        /// afterwards — see `vectorizeFormulas`.
-        var math: [Int: MathOverlay] = [:]
+        /// Inline images per block — formulas *and* pictures in the document —
+        /// laid out as invisible placeholders and drawn over afterwards, so a
+        /// `$…$` prints as vector glyphs and a mid-sentence picture prints at
+        /// all. See `InlineOverlay`.
+        var inline: [Int: InlineOverlay] = [:]
         /// Blocks that are nothing but a `$$…$$` formula, drawn as vector
         /// glyphs (see `standaloneFormula`).
         var formulaPages: [Int: BlockPage] = [:]
@@ -170,18 +170,40 @@ enum PrintController {
         var diagramPages: [Int: BlockPage] = [:]
     }
 
-    /// A block's inline formulas: the images the page lays out with, and the
-    /// vector versions drawn over them afterwards.
-    private struct MathOverlay {
-        /// Bitmap images keyed by image source. The page is laid out with
-        /// these — they are what the reader gets if the overlay cannot run.
-        let images: [String: Image]
-        /// Solid background-coloured images of exactly the same size, used to
-        /// lay the *finished* page out: invisible, and a few bytes each where
-        /// a formula bitmap is kilobytes.
-        let placeholders: [String: Image]
-        /// The formulas to draw into their places, in document order.
-        let formulas: [MathRendered]
+    /// One inline image: what the layout shows in its place, and what is drawn
+    /// there afterwards.
+    private struct InlineSlot {
+        /// The markdown source string — what MarkdownUI keys its inline images
+        /// by, and what the layout pass supplies a placeholder for.
+        let source: String
+        /// A solid bitmap of the slot's *size*, whose **pixel** dimensions are
+        /// `1 × (index + 1)`. A page drawn with these is matched back to the
+        /// slots by that signature, so a formula is paired with its own
+        /// rectangle instead of one that merely happens to be the same size.
+        let placeholder: NSImage
+        /// The size the slot was laid out at, to check the rectangle against.
+        let size: CGSize
+        let content: Content
+
+        enum Content {
+            /// A formula, drawn as vector glyphs.
+            case formula(MathRendered)
+            /// A picture from the document, drawn as itself.
+            case image(NSImage)
+        }
+    }
+
+    /// A block's inline images, in document order.
+    private struct InlineOverlay {
+        let slots: [InlineSlot]
+        /// The real images, for the page laid out when the overlay cannot run:
+        /// a formula as its baked bitmap, a picture as the picture. The reader
+        /// then gets what print produced before this existed.
+        let fallback: [String: Image]
+
+        var placeholders: [String: Image] {
+            Dictionary(uniqueKeysWithValues: slots.map { ($0.source, Image(nsImage: $0.placeholder)) })
+        }
     }
 
     /// Everything the print view tree needs for one block's markdown.
@@ -296,64 +318,130 @@ enum PrintController {
         return BlockPage(document: document, page: page, size: size)
     }
 
-    /// A solid image of `size`, used to reserve a formula's place on a page
-    /// that will have the formula drawn into it afterwards. Painted the page's
-    /// own background — the colour the print container fills with — so it is
-    /// invisible whatever the theme paints.
-    private static func blankImage(size: CGSize, background: NSColor) -> NSImage {
-        NSImage(size: NSSize(width: max(size.width, 1), height: max(size.height, 1)), flipped: false) { rect in
-            background.setFill()
-            rect.fill()
-            return true
+    /// The pictures a block's markdown refers to *inline* — in the middle of a
+    /// sentence or a list item — loaded so print can draw them.
+    ///
+    /// Skips formulas (they have their own path), remote URLs (print does not
+    /// fetch), and a block that is nothing but one image: that one reaches the
+    /// block image provider, which loads synchronously and always has printed.
+    /// A picture inline is drawn at its own size, the same as the screen draws
+    /// it — the `width`/`height` a raw `<img>` carries only apply where that
+    /// tag is a block of its own.
+    private static func inlinePictures(
+        in markdown: String,
+        baseURL: URL?
+    ) -> [(source: String, image: NSImage)] {
+        var sources: [String] = []
+        var rest = Substring(markdown)
+        while let open = rest.range(of: "![](") {
+            guard let close = rest[open.upperBound...].firstIndex(of: ")") else { break }
+            sources.append(String(rest[open.upperBound..<close]))
+            rest = rest[rest.index(after: close)...]
+        }
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sources.count == 1, trimmed == "![](\(sources[0]))" { return [] }
+        return sources.compactMap { source in
+            guard !source.hasPrefix("\(MathSpec.scheme)://"),
+                  let image = picture(for: source, baseURL: baseURL) else { return nil }
+            return (source, image)
         }
     }
 
-    /// Draws each inline formula over the bitmap the page was laid out with.
+    /// Loads one inline picture: a raw `<img>` tag's `src` (resolved against the
+    /// document), or a plain markdown image's URL, file or `data:` only.
+    private static func picture(for source: String, baseURL: URL?) -> NSImage? {
+        var target = source
+        var size: CGSize?
+        var loadedSpec: HTMLImageSpec?
+        if source.hasPrefix("\(HTMLImageSpec.scheme)://") {
+            guard let url = URL(string: source), let spec = HTMLImageSpec(url: url) else { return nil }
+            let resolved = spec.resolvedURL(baseURL: baseURL)
+            guard resolved.isFileURL || resolved.scheme == "data" else { return nil }
+            target = resolved.absoluteString
+            size = nil   // filled in below, once the picture is loaded
+            loadedSpec = spec
+        }
+        let image: NSImage?
+        if let url = URL(string: target), url.scheme == "data" {
+            image = decodeDataURI(target)
+        } else {
+            guard let url = URL(string: target), url.isFileURL || !target.contains("://") else { return nil }
+            let file = url.isFileURL ? url : URL(fileURLWithPath: target, relativeTo: baseURL).standardizedFileURL
+            image = NSImage(contentsOf: file)
+        }
+        guard let image else { return nil }
+        // A picture inline is drawn at the size the tag asked for, the same as
+        // the screen draws it, by giving the image that point size.
+        image.size = size.flatMap { $0 } ?? loadedSpec?.displaySize(natural: image.size) ?? image.size
+        return image
+    }
+
+    private static func decodeDataURI(_ uri: String) -> NSImage? {
+        guard let comma = uri.firstIndex(of: ",") else { return nil }
+        let header = uri[uri.startIndex..<comma]
+        let payload = String(uri[uri.index(after: comma)...])
+        let data = header.contains("base64")
+            ? Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
+            : payload.removingPercentEncoding.flatMap { Data($0.utf8) }
+        guard let data else { return nil }
+        return NSImage(data: data)
+    }
+
+    /// A solid image that reserves one inline slot's place on a page, painted
+    /// the page's own background so it is invisible whatever the theme paints.
     ///
-    /// Why this dance: SwiftUI draws inline images as bitmaps. Any `NSImage`
-    /// handed to `Text(Image)` is rasterized — measured, SwiftMath's
-    /// drawing-handler image and one backed by a PDF page both land at 72 ppi,
-    /// and only a pre-baked bitmap keeps its own density — and `Text` ignores
-    /// `AttributedString` attachments outright, so an inline `$…$` cannot be
-    /// vector by itself. So the page is laid out with the bitmap in place, the
-    /// image placements are read back out of it, and SwiftMath's drawing-handler
-    /// image is drawn over each one — where a PDF context keeps the glyphs.
-    ///
-    /// Returns nil — leaving the page exactly as rendered, bitmaps and all —
-    /// when the placements do not account for every formula, or a placement
-    /// does not match the formula it should hold.
-    private static func formulaPlacements(
-        in page: BlockPage,
-        overlay: MathOverlay?
-    ) -> [CGRect]? {
-        guard let overlay, !overlay.formulas.isEmpty,
+    /// Its *pixel* size is `1 × (index + 1)`: the page's content stream reports
+    /// exactly that, which is how the slot is found again without inferring
+    /// anything from where a rectangle sits or how big it is.
+    private static func placeholderImage(size: CGSize, index: Int, background: NSColor) -> NSImage? {
+        guard let ctx = CGContext(
+            data: nil, width: 1, height: index + 1, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        ctx.setFillColor(background.usingColorSpace(.deviceRGB)?.cgColor ?? NSColor.white.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: 1, height: index + 1))
+        guard let cg = ctx.makeImage() else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: max(size.width, 1), height: max(size.height, 1)))
+    }
+
+    /// The rectangle each slot occupies, read back from a page laid out with
+    /// the placeholders: every image the page draws whose pixel width is 1 is
+    /// one of ours, and its pixel height says which one. Matching by that
+    /// signature rather than by size is what lets formulas and pictures share
+    /// a block without being confused for each other.
+    private static func slotRects(in page: BlockPage, overlay: InlineOverlay?) -> [CGRect]? {
+        guard let overlay, !overlay.slots.isEmpty,
               let placements = imagePlacements(in: page.page) else { return nil }
-        // The page draws images in document order, so walk both lists in that
-        // order and pair them by size. A placement matching no formula is some
-        // other image in the block and is left alone.
-        var rects: [CGRect] = []
-        var remaining = overlay.formulas
+        var found = [CGRect?](repeating: nil, count: overlay.slots.count)
         for placement in placements {
-            guard let match = remaining.firstIndex(where: { formula in
-                let size = formula.vectorImage.size
-                return abs(placement.rect.width - size.width) <= 2
-                    && abs(placement.rect.height - size.height) <= 2
-            }) else { continue }
-            rects.append(placement.rect)
-            remaining.remove(at: match)
+            let index = Int(placement.pixels.height) - 1
+            guard placement.pixels.width == 1,
+                  index >= 0, index < found.count, found[index] == nil else { continue }
+            let expected = overlay.slots[index].size
+            guard abs(placement.rect.width - expected.width) <= 2,
+                  abs(placement.rect.height - expected.height) <= 2 else { continue }
+            found[index] = placement.rect
         }
-        guard remaining.isEmpty, rects.count == overlay.formulas.count else { return nil }
-        return rects
+        guard found.allSatisfy({ $0 != nil }) else { return nil }
+        return found.compactMap { $0 }
     }
 
-    /// Draws the formulas into the page that was laid out with placeholders
-    /// standing in for them, where a PDF context keeps them vector.
-    private static func drawFormulas(
-        _ formulas: [MathRendered],
+    /// Draws every slot into the page that reserved its place: a formula as
+    /// vector glyphs (SwiftMath's drawing-handler image, which a PDF context
+    /// keeps as glyphs), a picture as itself.
+    ///
+    /// Why the dance: SwiftUI draws inline images as bitmaps — any `NSImage`
+    /// handed to `Text(Image)` is rasterized, and `Text` ignores
+    /// `AttributedString` attachments — so an inline image is only ever drawn
+    /// from the images supplied to the layout, never resolved, and a formula
+    /// cannot be vector where it sits.
+    private static func drawSlots(
+        _ overlay: InlineOverlay,
         at rects: [CGRect],
         on page: BlockPage
     ) -> BlockPage? {
-        guard rects.count == formulas.count else { return nil }
+        guard rects.count == overlay.slots.count else { return nil }
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData) else { return nil }
         var mediaBox = CGRect(origin: .zero, size: page.size)
@@ -362,8 +450,11 @@ enum PrintController {
         ctx.drawPDFPage(page.page)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-        for (rect, formula) in zip(rects, formulas) {
-            formula.vectorImage.draw(in: rect)
+        for (rect, slot) in zip(rects, overlay.slots) {
+            switch slot.content {
+            case .formula(let rendered): rendered.vectorImage.draw(in: rect)
+            case .image(let image): image.draw(in: rect)
+            }
         }
         NSGraphicsContext.restoreGraphicsState()
         ctx.endPDFPage()
@@ -576,7 +667,6 @@ enum PrintController {
                 theme: request.theme,
                 typeScale: printTypeScale(contentWidth: contentWidth, theme: request.theme)
             )
-            guard source.hasMath else { continue }
             if let spec = standaloneFormula(source) {
                 let rendered = await MathImageCache.shared.rendered(for: spec)
                 if let page = formulaPage(for: spec, rendered: rendered, width: contentWidth) {
@@ -584,23 +674,41 @@ enum PrintController {
                     continue
                 }
             }
-            // Typeset the block's formulas now and pass them to the view tree.
-            // That tree is drawn by `ImageRenderer`, which runs no async work,
-            // so MarkdownUI would otherwise skip every inline image it hasn't
-            // loaded — i.e. print the paragraph with its formulas missing.
-            var images: [String: Image] = [:]
-            var placeholders: [String: Image] = [:]
-            var formulas: [MathRendered] = []
+            // Resolve every inline image now and give the view tree
+            // placeholders in their places. That tree is drawn by
+            // `ImageRenderer`, which runs no async work, so MarkdownUI would
+            // otherwise skip every inline image it hasn't been handed — and
+            // the placeholders reserve exactly the space each one needs.
+            let background = NSColor(request.theme.background)
+            var slots: [InlineSlot] = []
+            var fallback: [String: Image] = [:]
             for spec in source.specs {
                 let rendered = await MathImageCache.shared.rendered(for: spec)
-                images[spec.url] = Image(nsImage: rendered.image)
-                placeholders[spec.url] = Image(nsImage: blankImage(
+                guard let placeholder = placeholderImage(
+                    size: rendered.image.size, index: slots.count, background: background
+                ) else { continue }
+                fallback[spec.url] = Image(nsImage: rendered.image)
+                slots.append(InlineSlot(
+                    source: spec.url,
+                    placeholder: placeholder,
                     size: rendered.image.size,
-                    background: NSColor(request.theme.background)
+                    content: .formula(rendered)
                 ))
-                formulas.append(rendered)
             }
-            result.math[idx] = MathOverlay(images: images, placeholders: placeholders, formulas: formulas)
+            for picture in inlinePictures(in: source.markdown, baseURL: request.baseURL) {
+                guard let placeholder = placeholderImage(
+                    size: picture.image.size, index: slots.count, background: background
+                ) else { continue }
+                fallback[picture.source] = Image(nsImage: picture.image)
+                slots.append(InlineSlot(
+                    source: picture.source,
+                    placeholder: placeholder,
+                    size: picture.image.size,
+                    content: .image(picture.image)
+                ))
+            }
+            guard !slots.isEmpty else { continue }
+            result.inline[idx] = InlineOverlay(slots: slots, fallback: fallback)
         }
         return result
     }
@@ -736,43 +844,36 @@ enum PrintController {
                 theme: request.theme,
                 typeScale: printTypeScale(contentWidth: contentWidth, theme: request.theme)
             )
-            let root = blockRoot(
-                markdown: source.markdown,
-                mermaidImage: prepass.images[idx],
-                theme: request.theme,
-                baseURL: request.baseURL,
-                width: contentWidth,
-                resolvedInlineImages: prepass.math[idx]?.images ?? [:]
-            )
-            guard let render = renderBlockPDF(root: root, width: contentWidth) else {
-                continue
-            }
-            let page = BlockPage(document: render.document, page: render.page, size: render.size)
-            // Inline formulas print as vector: lay the page out with the bitmap
-            // formulas (which is also what a failure falls back to), read back
-            // where they landed, then lay the same page out with invisible
-            // placeholders and draw the formulas into those places.
-            var printed = page
-            if let overlay = prepass.math[idx],
-               let rects = formulaPlacements(in: page, overlay: overlay) {
-                let blank = blockRoot(
+            func layout(_ images: [String: Image]) -> BlockPage? {
+                let root = blockRoot(
                     markdown: source.markdown,
                     mermaidImage: prepass.images[idx],
                     theme: request.theme,
                     baseURL: request.baseURL,
                     width: contentWidth,
-                    resolvedInlineImages: overlay.placeholders
+                    resolvedInlineImages: images
                 )
-                if let render = renderBlockPDF(root: blank, width: contentWidth),
-                   abs(render.size.height - page.size.height) <= 1,
-                   let composed = drawFormulas(
-                       overlay.formulas,
-                       at: rects,
-                       on: BlockPage(document: render.document, page: render.page, size: render.size)
-                   ) {
-                    printed = composed
-                }
+                guard let render = renderBlockPDF(root: root, width: contentWidth) else { return nil }
+                return BlockPage(document: render.document, page: render.page, size: render.size)
             }
+
+            // With inline images, the block is laid out with invisible
+            // placeholders — each carrying its slot's index in its *pixel*
+            // size — and the real thing is drawn into each rectangle: vector
+            // for a formula, the picture itself for a picture. The layout with
+            // the real images is only made when that cannot be done, so a
+            // failure prints what it always did instead of a missing formula.
+            var printed: BlockPage?
+            if let overlay = prepass.inline[idx], !overlay.slots.isEmpty {
+                if let page = layout(overlay.placeholders),
+                   let rects = slotRects(in: page, overlay: overlay) {
+                    printed = drawSlots(overlay, at: rects, on: page)
+                }
+                if printed == nil { printed = layout(overlay.fallback) }
+            } else {
+                printed = layout([:])
+            }
+            guard let printed else { continue }
             append(printed)
         }
         container.frame = NSRect(x: 0, y: 0, width: contentWidth, height: max(y - spacing, 1))

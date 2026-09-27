@@ -654,11 +654,14 @@ struct MathInlineImageProvider: InlineImageProvider {
 
     func image(with url: URL, label: String) async throws -> Image {
         if let spec = HTMLImageSpec(url: url) {
-            // A raw `<img>` in the middle of a paragraph: MarkdownUI draws
-            // inline images itself, so hand it the loaded file.
+            // A raw `<img>` in the middle of a paragraph. MarkdownUI draws
+            // inline images itself, at the image's own point size, so the size
+            // the tag asked for is applied here by giving the loaded image that
+            // point size — its pixels are untouched, so nothing is resampled.
             guard let image = NSImage(contentsOf: spec.resolvedURL(baseURL: baseURL)) else {
                 throw URLError(.fileDoesNotExist)
             }
+            image.size = spec.displaySize(natural: image.size)
             return Image(nsImage: image)
         }
         guard let spec = MathSpec(url: url) else {
