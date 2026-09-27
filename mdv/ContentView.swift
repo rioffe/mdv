@@ -479,6 +479,7 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
+        .task { await selftestPrintIfNeeded() }  // TEMP SELF-TEST (delete)
         .onChange(of: selectedEntry) { _ in
             // Persist the leaving file's scroll position FIRST, before we touch
             // `rawMarkdown` via `loadCurrentEntry`. We deliberately use
@@ -1641,8 +1642,36 @@ struct ContentView: View {
             theme: printTheme,
             baseURL: currentDocumentDirectory,
             smartTypography: userSmartTypography && printTheme.smartTypographyAllowed,
-            window: NSApp.keyWindow
+            window: NSApp.keyWindow,
+            // WYSIWYG: nil = no header (ordinary markdown), [] = header
+            // exists but is hidden on screen (print nothing for it).
+            frontmatter: showFrontmatter ? frontmatter : []
         ))
+    }
+
+    /// TEMP SELF-TEST (delete): `MDV_PRINT_TEST=/path/to/file.md` → load the
+    /// file, run the print pipeline to a PDF next to it, and terminate.
+    @MainActor
+    private func selftestPrintIfNeeded() async {
+        guard let path = ProcessInfo.processInfo.environment["MDV_PRINT_TEST"] else { return }
+        loadFile(URL(fileURLWithPath: path))
+        for _ in 0..<150 where rawMarkdown.isEmpty {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let printTheme = MDVTheme.highContrast
+        let request = PrintController.Request(
+            blocks: blocks,
+            jobTitle: "selftest",
+            theme: printTheme,
+            baseURL: currentDocumentDirectory,
+            smartTypography: false,
+            window: nil,
+            frontmatter: showFrontmatter ? frontmatter : []
+        )
+        try? await Task.sleep(for: .seconds(1))
+        await PrintController.selfTestPDF(request, to: URL(fileURLWithPath: path + ".print.pdf"))
+        print("MDV_SELFTEST: wrote \(path).print.pdf")
+        NSApp.terminate(nil)
     }
 
     // MARK: - Table of Contents

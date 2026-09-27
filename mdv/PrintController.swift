@@ -20,13 +20,55 @@ import SwiftUI
 /// keeps text as vector glyphs in the final PDF.
 ///
 /// Mermaid diagrams render asynchronously on screen (`.task` →
-/// MDVMermaidImageCache); ImageRenderer never runs async work, so mermaid
-/// blocks are pre-rendered to NSImages through the same cache before the
-/// view tree is built, and a fence whose render fails is re-tagged
-/// `mermaid` → `text` so it prints as a plain code block rather than as an
-/// empty box.
+/// MDVMermaidImageCache); ImageRenderer never runs async work, so blocks
+/// are pre-rendered to NSImages before the view tree is built: native
+/// types through the same raster cache, the gantt/pie/&-co that go
+/// through the bundled mermaid.js via an offscreen WebView. A fence whose
+/// render fails either way is re-tagged `mermaid` → `text` so it prints
+/// as a plain code block rather than as an empty box. Metadata headers
+/// (frontmatter) print as the same properties table the screen shows.
+///
+/// LaTeX is async for the same reason — MarkdownUI typesets `$…$` as an
+/// inline image resolved in a `.task` — so the pre-pass typesets every
+/// formula up front and hands the view tree the finished images through
+/// `markdownResolvedInlineImages(_:)` (the one patch mdv carries on its
+/// vendored MarkdownUI — see Vendor/MarkdownUI/README.md). Printed pages are
+/// therefore vector text with formulas embedded at `printMathDensity`.
 @MainActor
 enum PrintController {
+    /// Print typography scale applied to body/heading/code type (see
+    /// `MDVTheme.markdownTheme(scale:forPrint:)` and `MDVCodeSyntaxHighlighter`).
+    ///
+    /// The theme's `baseFontSize` (16pt) is tuned for the on-screen column
+    /// (≈700–900pt wide); on paper the text column is just 7in — 504pt at
+    /// the 54pt margins below — where 16pt/24pt reads as large print. 0.75
+    /// lands at 12pt body / 18pt leading, i.e. ordinary book density.
+    /// Em-relative leading and heading sizes follow; the theme's absolute
+    /// point margins (paragraph gaps, heading tops) deliberately don't, so
+    /// block rhythm stays put while the type gets denser.
+    private static let printTypeScale: CGFloat = 0.75
+
+    /// Pixels per point to bake printed formulas at. The page stays vector
+    /// text, but SwiftUI rasterizes `Image(nsImage:)` even into a PDF context
+    /// (measured: 1 px/pt, i.e. 72 ppi, for a drawing-handler image), so this
+    /// is what decides how crisp a formula prints. 6 → 432 ppi, comfortably
+    /// above the ~300 ppi print norm; the screen keeps the display's scale.
+    private static let printMathDensity: CGFloat = 6
+
+    /// TEMP SELF-TEST (delete): run the full print pipeline — pre-pass,
+    /// container, AppKit pagination — and write the result to a PDF file
+    /// instead of presenting a panel.
+    static func selfTestPDF(_ request: Request, to url: URL) async {
+        let printInfo = makePrintInfo()
+        let prepass = await preRender(request: request, printInfo: printInfo)
+        let container = buildContainer(request: request, prepass: prepass, printInfo: printInfo)
+        let data = NSMutableData()
+        let op = NSPrintOperation.pdfOperation(
+            with: container, inside: container.bounds, to: data, printInfo: printInfo
+        )
+        op.run()
+        try? data.write(to: url)
+    }
 
     struct Request {
         let blocks: [String]
@@ -38,6 +80,11 @@ enum PrintController {
         let smartTypography: Bool
         /// Sheet parent. nil → app-modal dialog.
         let window: NSWindow?
+        /// Block 0 as a properties table: `nil` means the document has no
+        /// metadata header (print it as ordinary markdown), an empty array
+        /// means the header exists but is hidden on screen (print nothing
+        /// for that block), non-empty prints the table.
+        let frontmatter: [FrontmatterRow]?
     }
 
     static func printDocument(_ request: Request) {
@@ -46,8 +93,9 @@ enum PrintController {
             NSSound.beep()
             return
         }
+        let printInfo = makePrintInfo()
         Task { @MainActor in
-            let mermaid = await preRenderMermaid(blocks: request.blocks, theme: request.theme)
+            let prepass = await preRender(request: request, printInfo: printInfo)
             // Leave the task context before building views or presenting the
             // panel: the macOS 26 print panel is SwiftUI-backed and its view
             // updates interrogate the current Swift-concurrency executor;
@@ -56,8 +104,7 @@ enum PrintController {
             // once the task is gone. A plain main-queue callout has no task
             // context to go stale. Reproduced 5/5 without this hop, 0/N with.
             DispatchQueue.main.async {
-                let printInfo = makePrintInfo()
-                let container = buildContainer(request: request, mermaid: mermaid, printInfo: printInfo)
+                let container = buildContainer(request: request, prepass: prepass, printInfo: printInfo)
                 runOperation(container: container, printInfo: printInfo, request: request)
             }
         }
@@ -81,29 +128,106 @@ enum PrintController {
         return info
     }
 
-    // MARK: - Mermaid pre-pass
+    // MARK: - Pre-pass
 
-    private struct MermaidPrePass {
+    private struct PrePass {
         var images: [Int: NSImage] = [:]
         var failed: Set<Int> = []
+        /// Typeset LaTeX, per block and keyed by image source. Handed to the
+        /// view tree through `\.resolvedInlineImages` — see `blockRoot`.
+        var math: [Int: [String: Image]] = [:]
     }
 
-    private static func preRenderMermaid(blocks: [String], theme: MDVTheme) async -> MermaidPrePass {
+    /// Everything the print view tree needs for one block's markdown.
+    private struct BlockSource {
+        let markdown: String
+        /// The math spans the block contains, in document order.
+        let specs: [MathSpec]
+        /// The block contained at least one `$…$` / `$$…$$` span, i.e. its
+        /// laid-out content depends on async image resolution.
+        var hasMath: Bool { !specs.isEmpty }
+    }
+
+    /// Mirrors the screen pipeline's order (`ContentView.blockView`): math
+    /// spans become image references first, smartening runs after so it
+    /// never rewrites LaTeX.
+    private static func blockSource(
+        _ block: String,
+        mermaidFailed: Bool,
+        smartTypography: Bool,
+        theme: MDVTheme
+    ) -> BlockSource {
+        let source = mermaidFailed ? retagMermaidFence(block) : block
+        let rewritten = MathMarkdown.rewritten(
+            source,
+            fontSize: theme.baseFontSize * printTypeScale,
+            headingSizeEms: theme.headingSizeEms,
+            color: NSColor(theme.text),
+            rasterScale: printMathDensity
+        )
+        return BlockSource(
+            markdown: smartTypography ? smartenMarkdown(rewritten.markdown) : rewritten.markdown,
+            specs: rewritten.specs
+        )
+    }
+
+    private static func preRender(request: Request, printInfo: NSPrintInfo) async -> PrePass {
         // Same style preference MermaidCodeBlockChrome persists via
-        // @AppStorage("mdv.mermaid.style").
+        // @AppStorage("mdv.mermaid.style") — only the native path honours it.
         let style = UserDefaults.standard.string(forKey: "mdv.mermaid.style")
             .flatMap(MermaidRenderStyle.init(rawValue:)) ?? .document
-        var result = MermaidPrePass()
-        for (idx, block) in blocks.enumerated() {
-            guard let source = mermaidSource(fromFencedBlock: block) else { continue }
-            let key = MDVMermaidRenderKey(source: source, theme: theme, style: style)
-            if let image = await MDVMermaidImageCache.shared.image(
-                source: source, theme: theme, style: style, key: key
-            ) {
-                result.images[idx] = image
-            } else {
-                result.failed.insert(idx)
+        let contentWidth = printInfo.paperSize.width
+            - printInfo.leftMargin - printInfo.rightMargin
+        // The block view pads the diagram 18pt per side; render the web page
+        // at the width the image actually displays at.
+        let diagramWidth = max(contentWidth - 36, 1)
+        var result = PrePass()
+
+        for (idx, block) in request.blocks.enumerated() {
+            if let source = mermaidSource(fromFencedBlock: block) {
+                if isBeautifulMermaidSupported(source) {
+                    let key = MDVMermaidRenderKey(source: source, theme: request.theme, style: style)
+                    if let image = await MDVMermaidImageCache.shared.image(
+                        source: source, theme: request.theme, style: style, key: key
+                    ) {
+                        result.images[idx] = image
+                    } else {
+                        result.failed.insert(idx)
+                    }
+                } else if let image = await MermaidWebRenderer.image(
+                    source: source, theme: request.theme, width: diagramWidth
+                ) {
+                    // Gantt, pie, & co.: the bundled mermaid.js path, rasterized
+                    // offscreen so it prints like a native diagram rather than
+                    // as its source.
+                    result.images[idx] = image
+                } else {
+                    result.failed.insert(idx)
+                }
+                continue
             }
+
+            // Block 0 with a metadata header prints as the properties table,
+            // which has no markdown body to typeset.
+            if idx == 0, request.frontmatter != nil { continue }
+
+            let source = blockSource(
+                block,
+                mermaidFailed: result.failed.contains(idx),
+                smartTypography: request.smartTypography,
+                theme: request.theme
+            )
+            guard source.hasMath else { continue }
+            // Typeset the block's formulas now and pass them to the view tree.
+            // That tree is drawn by `ImageRenderer`, which runs no async work,
+            // so MarkdownUI would otherwise skip every inline image it hasn't
+            // loaded — i.e. print the paragraph with its formulas missing.
+            var images: [String: Image] = [:]
+            for spec in source.specs {
+                let rendered = await MathImageCache.shared.rendered(for: spec)
+                images[spec.url] = Image(nsImage: rendered.image)
+            }
+            result.math[idx] = images
         }
         return result
     }
@@ -145,9 +269,37 @@ enum PrintController {
 
     // MARK: - Container construction
 
+    /// The print view for one markdown block, shared by the pre-pass's math
+    /// rasterizer and `buildContainer` so both render byte-identical trees.
+    /// Pinning the width inside the root view makes the renderer (and the
+    /// hosting view) report the ideal height at that width.
+    private static func blockRoot(
+        markdown: String,
+        mermaidImage: NSImage?,
+        theme: MDVTheme,
+        baseURL: URL?,
+        width: CGFloat,
+        resolvedInlineImages: [String: Image] = [:]
+    ) -> AnyView {
+        AnyView(
+            PrintBlockView(
+                markdown: markdown,
+                mermaidImage: mermaidImage,
+                theme: theme,
+                scale: printTypeScale,
+                baseURL: baseURL
+            )
+            .frame(width: width, alignment: .topLeading)
+            .environment(\.colorScheme, theme.isDark ? .dark : .light)
+            // Formulas the view tree can't resolve itself (no async work under
+            // `ImageRenderer`) — without these an inline `$…$` draws as nothing.
+            .markdownResolvedInlineImages(resolvedInlineImages)
+        )
+    }
+
     private static func buildContainer(
         request: Request,
-        mermaid: MermaidPrePass,
+        prepass: PrePass,
         printInfo: NSPrintInfo
     ) -> PrintContainerView {
         let contentWidth = printInfo.paperSize.width
@@ -160,30 +312,55 @@ enum PrintController {
         // hover padding × 2.
         let spacing: CGFloat = 12
         var y: CGFloat = 0
-        for (idx, block) in request.blocks.enumerated() {
-            let source = mermaid.failed.contains(idx) ? retagMermaidFence(block) : block
-            let markdown = request.smartTypography ? smartenMarkdown(source) : source
-            let root = PrintBlockView(
-                markdown: markdown,
-                mermaidImage: mermaid.images[idx],
-                theme: request.theme,
-                baseURL: request.baseURL
-            )
-            // Pinning the width inside the root view makes ImageRenderer
-            // report the ideal height at that width.
-            .frame(width: contentWidth, alignment: .topLeading)
-            .environment(\.colorScheme, request.theme.isDark ? .dark : .light)
-
-            guard let render = renderBlockPDF(root: AnyView(root), width: contentWidth) else {
-                continue
-            }
-            let frame = NSRect(x: 0, y: y, width: contentWidth, height: ceil(render.size.height))
+        func append(_ page: BlockPage) {
+            let frame = NSRect(x: 0, y: y, width: contentWidth, height: ceil(page.size.height))
             container.blockRenders.append(
                 PrintContainerView.BlockRender(
-                    frame: frame, document: render.document, page: render.page
+                    frame: frame, document: page.document, page: page.page
                 )
             )
             y += frame.height + spacing
+        }
+
+        for (idx, block) in request.blocks.enumerated() {
+            if idx == 0, let frontmatter = request.frontmatter {
+                // Block 0 is the metadata header: a properties table on
+                // screen, or nothing at all when the user has hidden it —
+                // mirror both instead of printing the raw fence as prose.
+                guard !frontmatter.isEmpty else { continue }
+                let root = AnyView(
+                    FrontmatterTableView(
+                        rows: frontmatter,
+                        theme: request.theme,
+                        fontScale: printTypeScale
+                    )
+                        .frame(width: contentWidth, alignment: .topLeading)
+                        .environment(\.colorScheme, request.theme.isDark ? .dark : .light)
+                )
+                if let render = renderBlockPDF(root: root, width: contentWidth) {
+                    append(BlockPage(document: render.document, page: render.page, size: render.size))
+                }
+                continue
+            }
+
+            let source = blockSource(
+                block,
+                mermaidFailed: prepass.failed.contains(idx),
+                smartTypography: request.smartTypography,
+                theme: request.theme
+            )
+            let root = blockRoot(
+                markdown: source.markdown,
+                mermaidImage: prepass.images[idx],
+                theme: request.theme,
+                baseURL: request.baseURL,
+                width: contentWidth,
+                resolvedInlineImages: prepass.math[idx] ?? [:]
+            )
+            guard let render = renderBlockPDF(root: root, width: contentWidth) else {
+                continue
+            }
+            append(BlockPage(document: render.document, page: render.page, size: render.size))
         }
         container.frame = NSRect(x: 0, y: 0, width: contentWidth, height: max(y - spacing, 1))
         return container
@@ -277,16 +454,29 @@ enum PrintController {
     }
 }
 
+/// One page of a block's rendered output, retained as a unit: a `CGPDFPage`
+/// does not retain its parent document, and dropping the document frees the
+/// page's backing bytes.
+private struct BlockPage {
+    let document: CGPDFDocument
+    let page: CGPDFPage
+    let size: CGSize
+}
+
 // MARK: - Per-block print view
 
 /// Print-side equivalent of ContentView.blockView: the plain Markdown path
-/// only (no find highlights, hover stripes, or selection tints), scale
-/// fixed at 1.0 regardless of screen zoom, remote images forced to the
-/// blocked placeholder so nothing in the tree depends on async work.
+/// only (no find highlights, hover stripes, or selection tints), type size
+/// fixed at `printTypeScale` regardless of screen zoom, remote images forced
+/// to the blocked placeholder so nothing in the tree depends on async work.
 private struct PrintBlockView: View {
     let markdown: String
     let mermaidImage: NSImage?
     let theme: MDVTheme
+    /// `PrintController.printTypeScale` — body/heading/code type size for
+    /// paper. Fixed (never derived from the screen's `themes.fontScale`) so
+    /// printed output doesn't depend on the reader's on-screen zoom. A
+    let scale: CGFloat
     let baseURL: URL?
 
     var body: some View {
@@ -307,8 +497,9 @@ private struct PrintBlockView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         } else {
             Markdown(markdown)
-                .markdownTheme(theme.markdownTheme(scale: 1.0, forPrint: true))
-                .markdownCodeSyntaxHighlighter(.mdv(theme: theme))
+                .markdownTheme(theme.markdownTheme(scale: scale, forPrint: true))
+                .markdownCodeSyntaxHighlighter(.mdv(theme: theme, scale: scale))
+                .markdownInlineImageProvider(MathInlineImageProvider())
                 .markdownImageProvider(LocalImageProvider(
                     baseURL: baseURL,
                     loadRemoteImages: false
@@ -393,3 +584,4 @@ final class PrintContainerView: NSView {
         newBottom.pointee = min(max(proposed, bottomLimit), oldBottom)
     }
 }
+

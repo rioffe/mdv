@@ -112,12 +112,27 @@ struct MermaidWebView: NSViewRepresentable {
         // so clear the flag before the new render reports back.
         DispatchQueue.main.async { self.failed = false }
 
-        let html = buildHTML(source: source, theme: theme)
+        let html = Self.buildHTML(source: source, theme: theme)
         webView.loadHTMLString(html, baseURL: nil)
     }
 
-    private func buildHTML(source: String, theme: MDVTheme) -> String {
+    static func buildHTML(source: String, theme: MDVTheme, chrome: Bool = true) -> String {
         let mermaidTheme = theme.isDark ? "dark" : "default"
+        let pollFallback = chrome ? "" : """
+            // Print path: the offscreen window may never receive animation
+            // frames, so the double-rAF report above can starve. Timers
+            // always fire, so poll until the height stabilizes (3 identical
+            // reads) or a deadline passes.
+            var mdvT0 = Date.now(), mdvLast = -1, mdvStable = 0;
+            var mdvTimer = setInterval(function() {
+              var h = svg.getBoundingClientRect().height;
+              if (h === mdvLast) { mdvStable++; } else { mdvStable = 0; mdvLast = h; }
+              if (mdvStable >= 3 || Date.now() - mdvT0 > 3000) {
+                clearInterval(mdvTimer);
+                report();
+              }
+            }, 50);
+            """
         let escaped = source
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -136,7 +151,7 @@ struct MermaidWebView: NSViewRepresentable {
         <style>
           * { margin: 0; padding: 0; box-sizing: border-box; }
           html, body { background: \(bgCSS); }
-          .mermaid { padding: 12px 18px; }
+          .mermaid { padding: \(chrome ? "12px 18px" : "0"); }
           .mermaid svg { max-width: 100%; height: auto; display: block; }
         </style>
         </head>
@@ -160,7 +175,7 @@ struct MermaidWebView: NSViewRepresentable {
               return;
             }
             function report() {
-              var h = svg.getBoundingClientRect().height + 24;
+              var h = svg.getBoundingClientRect().height + \(chrome ? 24 : 0);
               window.webkit.messageHandlers.mermaidHeight.postMessage({ ok: true, height: h });
             }
             // Some diagram types (journey, quadrantChart, requirementDiagram)
@@ -176,6 +191,7 @@ struct MermaidWebView: NSViewRepresentable {
             if (typeof ResizeObserver !== 'undefined') {
               new ResizeObserver(report).observe(svg);
             }
+            \(pollFallback)
           }).catch(function(err) {
             window.webkit.messageHandlers.mermaidHeight.postMessage({ ok: false, error: String(err) });
           });
@@ -228,5 +244,135 @@ struct MermaidWebView: NSViewRepresentable {
                 if !self.measured { self.measured = true }
             }
         }
+    }
+}
+
+// MARK: - One-shot print rendering
+
+/// Renders a diagram once through the bundled mermaid.js for the print
+/// pipeline. Same HTML and JS as the on-screen path, but instead of
+/// measuring the live view it rasterizes the rendered page into an
+/// `NSImage`, so web-path diagrams feed the print block pipeline exactly
+/// like native rasters.
+///
+/// The webview must live in a window: a webview that is never ordered
+/// front is never composited by the render server, and its snapshot comes
+/// back blank. We order a borderless window far off every display, then
+/// close it as soon as the image is in hand. Returns nil on render failure
+/// or timeout; the caller falls back to printing the source as a code block.
+@MainActor
+enum MermaidWebRenderer {
+
+    static func image(source: String, theme: MDVTheme, width: CGFloat) async -> NSImage? {
+        let width = max(width, 1)
+        let config = WKWebViewConfiguration()
+        let handler = SnapshotHandler()
+        config.userContentController.add(handler, name: "mermaidHeight")
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 400), configuration: config)
+        let window = RenderWindow(
+            contentRect: CGRect(x: 0, y: 0, width: width, height: 400),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = webView
+        // Programmatically created NSWindows default to
+        // `isReleasedWhenClosed == true`, which makes `close()` perform a raw
+        // `release` on top of ARC's own reference — an over-release that
+        // later traps as "message sent to deallocated instance" (seen as a
+        // SIGSEGV in `-[_NSWindowTransformAnimation dealloc]` during a
+        // CoreAnimation commit). ARC owns this window; AppKit must not.
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        // Same HTML/JS as the on-screen path (chrome-less variant): without
+        // this the webview stays blank, no height ever gets reported, and
+        // every web-path diagram falls back to printing its source.
+        webView.loadHTMLString(
+            MermaidWebView.buildHTML(source: source, theme: theme, chrome: false),
+            baseURL: nil
+        )
+        NSLog("MDV_SELFTEST: web render started (width \(width))")
+
+        let height = await handler.waitForHeight(timeout: 5)
+        NSLog("MDV_SELFTEST: height reported: \(height.map { String(format: "%.1f", $0) } ?? "timeout")")
+        guard let height, height > 0 else {
+            window.close()
+            return nil
+        }
+        // The SVG lays out at the webview width (max-width: 100%), which
+        // never changed; resizing only trims the empty body below it. Give
+        // the compositor one beat to settle before capturing.
+        webView.frame.size = NSSize(width: width, height: height)
+        window.setContentSize(NSSize(width: width, height: height))
+        try? await Task.sleep(for: .milliseconds(200))
+        let cg = await handler.snapshot(webView)
+        NSLog("MDV_SELFTEST: snapshot \(cg == nil ? "nil" : "ok")")
+        window.close()
+        guard let cg else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: width, height: height))
+    }
+
+    private final class SnapshotHandler: NSObject, WKScriptMessageHandler {
+        private var pending: (token: Int, cont: CheckedContinuation<CGFloat?, Never>)?
+        private var token = 0
+        /// A height reported before `waitForHeight` installed its
+        /// continuation, or a negative sentinel for a failed render.
+        private var reported: CGFloat?
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "mermaidHeight",
+                  let body = message.body as? [String: Any] else { return }
+            if let ok = body["ok"] as? Bool, ok, let h = body["height"] as? Double, h > 0 {
+                reported = CGFloat(h)
+            } else {
+                reported = -1
+            }
+            if let pending {
+                self.pending = nil
+                pending.cont.resume(returning: (reported ?? 0) < 0 ? nil : reported)
+            }
+        }
+
+        func waitForHeight(timeout: TimeInterval) async -> CGFloat? {
+            if let reported { return reported < 0 ? nil : reported }
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { (cont: CheckedContinuation<CGFloat?, Never>) in
+                    let myToken = self.token &+ 1
+                    self.pending = (token: myToken, cont: cont)
+                    // A page whose render never settles (broken JS, a type
+                    // the bundled mermaid.js rejects) must not hang the
+                    // print job.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+                        guard self.pending?.token == myToken else { return }
+                        self.pending = nil
+                        cont.resume(returning: nil)
+                    }
+                }
+            } onCancel: {
+                if let pending = self.pending {
+                    self.pending = nil
+                    pending.cont.resume(returning: nil)
+                }
+            }
+        }
+
+        func snapshot(_ webView: WKWebView) async -> CGImage? {
+            await withCheckedContinuation { continuation in
+                // macOS's snapshot API hands back an NSImage at the window's
+                // backing scale; collapse it to the backing CGImage.
+                webView.takeSnapshot(with: nil) { image, _ in
+                    let cg = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                    continuation.resume(returning: cg)
+                }
+            }
+        }
+    }
+
+    /// `.borderless` windows cannot become key by default, and a WKWebView
+    /// whose window can never become key never runs page scripts — the
+    /// height report (and with it the whole print render) would starve.
+    private final class RenderWindow: NSWindow {
+        override var canBecomeKey: Bool { true }
+        override var canBecomeMain: Bool { true }
     }
 }

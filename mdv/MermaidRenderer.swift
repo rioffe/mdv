@@ -312,7 +312,11 @@ private func firstMermaidDirectiveLine(in source: String) -> String {
     return ""
 }
 
-private func isBeautifulMermaidSupported(_ source: String) -> Bool {
+/// Diagram-type dispatch for the mermaid fence: the six families
+/// BeautifulMermaid renders natively, versus everything else that goes
+/// through the bundled mermaid.js. Consulted by both the on-screen
+/// renderer and the print pre-pass.
+func isBeautifulMermaidSupported(_ source: String) -> Bool {
     let first = firstMermaidDirectiveLine(in: source)
     if first.isEmpty { return false }
 

@@ -31,6 +31,11 @@ struct MathSpec: Hashable {
     let fontSize: CGFloat
     /// sRGB, packed 0xRRGGBBAA.
     let colorRGBA: UInt32
+    /// Pixels per point to bake the glyphs at. `nil` means the display's
+    /// backing scale — all the screen needs. Print asks for more: a print
+    /// block is a 1×-point raster embedded in the PDF, so a formula baked at
+    /// 2× lands at 144 ppi on paper.
+    let rasterScale: CGFloat?
 
     var color: NSColor {
         NSColor(
@@ -48,14 +53,24 @@ struct MathSpec: Hashable {
             .replacingOccurrences(of: "=", with: "")
         let size = String(format: "%.1f", fontSize)
         let color = String(format: "%08X", colorRGBA)
-        return "\(Self.scheme)://\(display ? "display" : "inline")/\(payload)?s=\(size)&c=\(color)"
+        // `d` rides along so a print spec is a distinct cache entry from the
+        // screen's: same formula, different baked resolution.
+        let density = rasterScale.map { String(format: "&d=%.2f", $0) } ?? ""
+        return "\(Self.scheme)://\(display ? "display" : "inline")/\(payload)?s=\(size)&c=\(color)\(density)"
     }
 
-    init(latex: String, display: Bool, fontSize: CGFloat, colorRGBA: UInt32) {
+    init(
+        latex: String,
+        display: Bool,
+        fontSize: CGFloat,
+        colorRGBA: UInt32,
+        rasterScale: CGFloat? = nil
+    ) {
         self.latex = latex
         self.display = display
         self.fontSize = fontSize
         self.colorRGBA = colorRGBA
+        self.rasterScale = rasterScale
     }
 
     init?(url: URL) {
@@ -78,6 +93,7 @@ struct MathSpec: Hashable {
         self.display = host == "display"
         self.fontSize = CGFloat(size)
         self.colorRGBA = color
+        self.rasterScale = query["d"].flatMap(Double.init).map { CGFloat($0) }
     }
 }
 
@@ -102,15 +118,31 @@ enum MathMarkdown {
         headingSizeEms: [CGFloat] = [],
         color: NSColor
     ) -> String {
-        guard block.contains("$") else { return block }
+        rewritten(block, fontSize: fontSize, headingSizeEms: headingSizeEms, color: color).markdown
+    }
+
+    /// `rewrite` plus the spans it just encoded.
+    ///
+    /// Callers that need the *typeset* math (the print pipeline pre-warms
+    /// `MathImageCache` so the block's later image resolution is a cache hit)
+    /// would otherwise have to re-parse the markdown they just built.
+    static func rewritten(
+        _ block: String,
+        fontSize: CGFloat,
+        headingSizeEms: [CGFloat] = [],
+        color: NSColor,
+        rasterScale: CGFloat? = nil
+    ) -> (markdown: String, specs: [MathSpec]) {
+        guard block.contains("$") else { return (block, []) }
         let trimmed = block.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { return block }
+        if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { return (block, []) }
 
         let rgba = Self.rgba(color)
         let chars = Array(block)
         let n = chars.count
         var out = ""
         out.reserveCapacity(block.count)
+        var specs: [MathSpec] = []
         var i = 0
         var codeRun = 0   // length of the open inline-code backtick run, 0 outside
 
@@ -128,7 +160,14 @@ enum MathMarkdown {
         }
 
         func spec(_ latex: String, display: Bool, at index: Int) -> String {
-            let s = MathSpec(latex: latex, display: display, fontSize: fontSize * scale(at: index), colorRGBA: rgba)
+            let s = MathSpec(
+                latex: latex,
+                display: display,
+                fontSize: fontSize * scale(at: index),
+                colorRGBA: rgba,
+                rasterScale: rasterScale
+            )
+            specs.append(s)
             return "![](\(s.url))"
         }
 
@@ -192,7 +231,7 @@ enum MathMarkdown {
             }
             out.append("$"); i += 1
         }
-        return out
+        return (out, specs)
     }
 
     /// Per-line font scale: the heading em for `#`–`######` lines (up to
@@ -424,6 +463,9 @@ final class MathImageCache {
         return result
     }
 
+    /// What the screen bakes at: one bitmap pixel per backing-store pixel.
+    private static var screenScale: CGFloat { NSScreen.main?.backingScaleFactor ?? 2 }
+
     private static func typeset(_ spec: MathSpec) -> MathRendered {
         MathSymbols.registerOnce()
         var math = MathImage(
@@ -439,7 +481,7 @@ final class MathImageCache {
             // bitmap: SwiftUI treats handler-backed images inside `Text` as
             // dynamic and keeps re-resolving the paragraph, which showed up as
             // a steady 10–20 % CPU on any page with inline math.
-            let baked = rasterized(image, scale: NSScreen.main?.backingScaleFactor ?? 2) ?? image
+            let baked = rasterized(image, scale: spec.rasterScale ?? screenScale) ?? image
             return MathRendered(image: baked, ascent: layout.ascent, descent: layout.descent, error: nil)
         }
         let message = error?.localizedDescription ?? "LaTeX could not be rendered"
@@ -481,7 +523,7 @@ final class MathImageCache {
             text.draw(at: .zero)
             return true
         }
-        return rasterized(image, scale: NSScreen.main?.backingScaleFactor ?? 2) ?? image
+        return rasterized(image, scale: spec.rasterScale ?? screenScale) ?? image
     }
 }
 
