@@ -55,6 +55,12 @@ struct MermaidCodeBlockChrome: View {
     @State private var copied = false
     @State private var copyGeneration = 0
 
+    // The style picker only drives BeautifulMermaid's palette; the WKWebView
+    // fallback for gantt/pie/etc. honours just light/dark via mermaid.js's
+    // own theme. Showing the menu for those diagrams would mislead users
+    // into thinking it does something it can't.
+    private var nativeRenderer: Bool { isBeautifulMermaidSupported(content) }
+
     var body: some View {
         if showSource {
             sourceChrome
@@ -90,7 +96,7 @@ struct MermaidCodeBlockChrome: View {
 
     private var floatingToolbar: some View {
         HStack(spacing: 2) {
-            styleMenu
+            if nativeRenderer { styleMenu }
 
             iconButton(
                 systemName: "curlybraces",
@@ -98,11 +104,13 @@ struct MermaidCodeBlockChrome: View {
                 help: "Show Mermaid source"
             ) { showSource = true }
 
-            iconButton(
-                systemName: "square.and.arrow.down",
-                tinted: false,
-                help: "Export diagram as PNG"
-            ) { MDVMermaidImage.exportPNG(source: content, theme: theme, style: style) }
+            if nativeRenderer {
+                iconButton(
+                    systemName: "square.and.arrow.down",
+                    tinted: false,
+                    help: "Export diagram as PNG"
+                ) { MDVMermaidImage.exportPNG(source: content, theme: theme, style: style) }
+            }
 
             iconButton(
                 systemName: copied ? "checkmark" : "doc.on.doc",
@@ -219,11 +227,13 @@ struct MermaidCodeBlockChrome: View {
         if showSource {
             Button(wrap ? "Disable Wrap" : "Wrap Long Lines") { wrap.toggle() }
         } else {
-            Menu("Diagram Style") {
-                stylePicker
-            }
-            Button("Export Diagram as PNG") {
-                MDVMermaidImage.exportPNG(source: content, theme: theme, style: style)
+            if nativeRenderer {
+                Menu("Diagram Style") {
+                    stylePicker
+                }
+                Button("Export Diagram as PNG") {
+                    MDVMermaidImage.exportPNG(source: content, theme: theme, style: style)
+                }
             }
         }
     }
@@ -262,6 +272,76 @@ struct MermaidCodeBlockChrome: View {
     }
 }
 
+/// Returns the first line of `source` that is meaningful for diagram-type
+/// dispatch — i.e. not blank, not a `%%` comment, not a `%%{ init: … }%%`
+/// directive, and not inside a `--- … ---` frontmatter block. Lowercased.
+///
+/// Mermaid lets users put any combination of those preamble forms before
+/// the actual diagram keyword (`gantt`, `flowchart LR`, …); naively
+/// inspecting the first physical line therefore false-routes those
+/// diagrams into the WKWebView path even when BeautifulMermaid could
+/// render them natively.
+private func firstMermaidDirectiveLine(in source: String) -> String {
+    var inFrontmatter = false
+    var inDirective = false
+
+    for raw in source.split(separator: "\n", omittingEmptySubsequences: false) {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        if line.isEmpty { continue }
+
+        if inFrontmatter {
+            if line == "---" { inFrontmatter = false }
+            continue
+        }
+        if inDirective {
+            if line.contains("}%%") { inDirective = false }
+            continue
+        }
+
+        if line == "---" { inFrontmatter = true; continue }
+        if line.hasPrefix("%%{") {
+            // Single-line `%%{ init: … }%%` is consumed here; only flip the
+            // multi-line flag if the closer isn't on the same line.
+            if !line.contains("}%%") { inDirective = true }
+            continue
+        }
+        if line.hasPrefix("%%") { continue }
+
+        return line.lowercased()
+    }
+    return ""
+}
+
+private func isBeautifulMermaidSupported(_ source: String) -> Bool {
+    let first = firstMermaidDirectiveLine(in: source)
+    if first.isEmpty { return false }
+
+    // Match the keyword exactly, or with any whitespace separator (spaces,
+    // tabs) before the diagram-specific arguments. Avoids the previous
+    // `"graph "` literal, which missed `graph\tLR` and bare `graph` on
+    // its own line, and avoids over-matching `graphfoo`.
+    func matches(_ keyword: String) -> Bool {
+        if first == keyword { return true }
+        guard first.hasPrefix(keyword) else { return false }
+        let next = first[first.index(first.startIndex, offsetBy: keyword.count)]
+        return next.isWhitespace
+    }
+
+    // BeautifulMermaid covers exactly these six families. `statediagram`
+    // matches both `stateDiagram` and `stateDiagram-v2`; same idea for
+    // `xychart` covering `xychart-beta`. `flowchart-elk` is intentionally
+    // *not* matched — ELK is a different layout backend that
+    // BeautifulMermaid doesn't speak.
+    if matches("flowchart") { return true }
+    if matches("graph") { return true }
+    if matches("sequencediagram") { return true }
+    if matches("classdiagram") { return true }
+    if matches("erdiagram") { return true }
+    if first.hasPrefix("statediagram") { return true } // statediagram-v2
+    if first.hasPrefix("xychart") { return true }      // xychart-beta
+    return false
+}
+
 struct MDVMermaidDiagramView: View {
     let source: String
     let theme: MDVTheme
@@ -293,46 +373,50 @@ struct MDVMermaidDiagramView: View {
     }
 
     var body: some View {
-        Group {
-            if failed {
-                MermaidFallbackView(source: source, theme: theme)
-            } else if let image, prepared != nil {
-                diagramBody(for: image)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, minHeight: 60)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 16)
+        if isBeautifulMermaidSupported(source) {
+            Group {
+                if failed {
+                    MermaidFallbackView(source: source, theme: theme)
+                } else if let image, prepared != nil {
+                    diagramBody(for: image)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, minHeight: 60)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                }
             }
-        }
-        .frame(maxWidth: .infinity)
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { availableWidth = proxy.size.width }
-                    .onChange(of: proxy.size.width) { availableWidth = $0 }
+            .frame(maxWidth: .infinity)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { availableWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { availableWidth = $0 }
+                }
+            )
+            .task(id: renderKey) {
+                failed = false
+                prepared = nil
+                image = nil
+                zoom = 1
+                committedZoom = 1
+                if let result = await MDVMermaidImageCache.shared.prepared(source: source, theme: theme, style: style, key: renderKey) {
+                    if !Task.isCancelled { prepared = result }
+                } else if !Task.isCancelled {
+                    failed = true
+                }
             }
-        )
-        .task(id: renderKey) {
-            failed = false
-            prepared = nil
-            image = nil
-            zoom = 1
-            committedZoom = 1
-            if let result = await MDVMermaidImageCache.shared.prepared(source: source, theme: theme, style: style, key: renderKey) {
-                if !Task.isCancelled { prepared = result }
-            } else if !Task.isCancelled {
-                failed = true
+            // Re-rasterize when the column width or the committed zoom changes.
+            // Layout is cached; this is just CoreText drawing at the new size.
+            .task(id: RasterRequest(key: renderKey, width: displayWidth * committedZoom, ready: prepared != nil)) {
+                guard let prepared, displayWidth > 0 else { return }
+                let width = floor(displayWidth * committedZoom)
+                let raster = await MDVMermaidImageCache.shared.raster(prepared, key: renderKey, width: width)
+                if !Task.isCancelled { image = raster }
             }
-        }
-        // Re-rasterize when the column width or the committed zoom changes.
-        // Layout is cached; this is just CoreText drawing at the new size.
-        .task(id: RasterRequest(key: renderKey, width: displayWidth * committedZoom, ready: prepared != nil)) {
-            guard let prepared, displayWidth > 0 else { return }
-            let width = floor(displayWidth * committedZoom)
-            let raster = await MDVMermaidImageCache.shared.raster(prepared, key: renderKey, width: width)
-            if !Task.isCancelled { image = raster }
+        } else {
+            MermaidWebViewContainer(source: source, theme: theme)
         }
     }
 
@@ -1104,7 +1188,7 @@ enum MDVMermaidImage {
     }
 }
 
-private struct MermaidFallbackView: View {
+struct MermaidFallbackView: View {
     let source: String
     let theme: MDVTheme
 

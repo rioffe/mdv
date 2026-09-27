@@ -41,6 +41,7 @@ A frustrated, untalented graphic designer (the author) could not resist letting 
 ## Diagrams and math
 
 - ` ```mermaid ` fences render as diagrams. Hover for the toolbar: switch style, show the source, export a PNG.
+- Flowcharts, sequence diagrams, class diagrams, ER diagrams, state diagrams, and XY charts render natively. Gantt charts and other diagram types render via a bundled mermaid.js — same toolbar, slightly slower first load.
 - `$…$` renders inline LaTeX math and `$$…$$` renders a display equation, typeset natively in Latin Modern Math. Right-click a display equation to copy its LaTeX. `\$` and dollars in code stay dollars; "$5 and $10" stays prose.
 
 ## Editor integration
