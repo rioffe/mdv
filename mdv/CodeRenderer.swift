@@ -219,6 +219,9 @@ final class CodeRenderer {
 struct MDVCodeSyntaxHighlighter: CodeSyntaxHighlighter {
     let theme: MDVTheme
     var scale: CGFloat = 1.0
+    /// Multiplier for this chrome's point paddings, mirroring
+    /// `markdownTheme(marginScale:)`.
+    var marginScale: CGFloat = 1.0
 
     func highlightCode(_ content: String, language: String?) -> Text {
         let attr = CodeRenderer.shared.render(code: content, languageHint: language, theme: theme, scale: scale)
@@ -246,6 +249,9 @@ struct CodeBlockChrome: View {
     let configuration: CodeBlockConfiguration
     let theme: MDVTheme
     var scale: CGFloat = 1.0
+    /// Multiplier for this chrome's point paddings, mirroring
+    /// `markdownTheme(marginScale:)`.
+    var marginScale: CGFloat = 1.0
     /// Print rendering: force soft-wrap (paper can't scroll a horizontal
     /// ScrollView — unwrapped long lines would silently truncate) and skip
     /// the hover toolbar / context-menu machinery.
@@ -327,7 +333,7 @@ struct CodeBlockChrome: View {
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                 .foregroundColor(theme.tertiaryText)
                 .opacity(displayLanguage.isEmpty ? 0 : 0.85)
-                .padding(.leading, 14)
+                .padding(.leading, 14 * marginScale)
 
             Spacer(minLength: 8)
 
@@ -345,15 +351,15 @@ struct CodeBlockChrome: View {
                         help: copied ? "Copied" : "Copy code"
                     ) { copy() }
                 }
-                .padding(.trailing, 6)
+                .padding(.trailing, 6 * marginScale)
                 .opacity(hovering ? 1 : 0)
                 // Always reserve the toolbar's space so the label doesn't
                 // jitter when hover toggles. The opacity transition stays
                 // smooth without a layout shift.
             }
         }
-        .frame(height: 26)
-        .padding(.top, 4)
+        .frame(height: 26 * marginScale)
+        .padding(.top, 4 * marginScale)
         .animation(.easeInOut(duration: 0.12), value: hovering)
         .animation(.easeInOut(duration: 0.18), value: copied)
         .animation(.easeInOut(duration: 0.18), value: wrap)
@@ -367,18 +373,18 @@ struct CodeBlockChrome: View {
             configuration.label
                 .fixedSize(horizontal: false, vertical: true)
                 .relativeLineSpacing(.em(0.225))
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 16 * marginScale)
+                .padding(.top, 4 * marginScale)
+                .padding(.bottom, 14 * marginScale)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             ScrollView(.horizontal, showsIndicators: false) {
                 configuration.label
                     .fixedSize(horizontal: false, vertical: true)
                     .relativeLineSpacing(.em(0.225))
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-                    .padding(.bottom, 14)
+                    .padding(.horizontal, 16 * marginScale)
+                    .padding(.top, 4 * marginScale)
+                    .padding(.bottom, 14 * marginScale)
             }
         }
     }

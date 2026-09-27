@@ -15,6 +15,11 @@ struct FrontmatterTableView: View {
     let rows: [FrontmatterRow]
     let theme: MDVTheme
     let fontScale: CGFloat
+    /// Multiplier for the cell padding, which mirrors `markdownTheme`'s GFM
+    /// table style — the print pipeline scales it with the margins so the
+    /// printed header keeps the proportions the screen shows. Screen callers
+    /// leave it at 1 (zoom changes the type, not the table's shape).
+    var paddingScale: CGFloat = 1
 
     /// Cell padding, taken from the GFM table cell style.
     private static let hPadding: CGFloat = 13
@@ -67,11 +72,11 @@ struct FrontmatterTableView: View {
             .font(font(weight: .semibold))
             .foregroundStyle(theme.text)
             .lineSpacing(round(bodySize * 0.25))
-            .padding(.horizontal, Self.hPadding)
+            .padding(.horizontal, Self.hPadding * paddingScale)
             .fixedSize()
             .background(widthProbe)
             .frame(width: keyColumnWidth, alignment: .topLeading)
-            .padding(.vertical, Self.vPadding)
+            .padding(.vertical, Self.vPadding * paddingScale)
             .modifier(CellBand(fill: fill(row), border: theme.border))
     }
 
@@ -83,8 +88,8 @@ struct FrontmatterTableView: View {
             .foregroundStyle(theme.text)
             .lineSpacing(round(bodySize * 0.25))
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, Self.vPadding)
-            .padding(.horizontal, Self.hPadding)
+            .padding(.vertical, Self.vPadding * paddingScale)
+            .padding(.horizontal, Self.hPadding * paddingScale)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .modifier(CellBand(fill: fill(row), border: theme.border))
     }

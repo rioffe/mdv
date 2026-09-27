@@ -199,10 +199,11 @@ enum PrintController {
         let scale = min(1, width / natural.width)
         let drawn = CGSize(width: natural.width * scale, height: natural.height * scale)
         // 4pt padding, which is what `MathDisplayView` puts around a display
-        // formula, and nothing else: MarkdownUI's measured height for such a
-        // block stopped at the image, so adding the paragraph's bottom margin
-        // here would space printed formulas differently from before.
-        let padding: CGFloat = 4
+        // formula, scaled like every other margin here, and nothing else:
+        // MarkdownUI's measured height for such a block stopped at the image,
+        // so adding the paragraph's bottom margin would space printed formulas
+        // differently from the blocks around them.
+        let padding: CGFloat = 4 * printTypeScale(contentWidth: width, theme: .highContrast)
         let size = CGSize(width: width, height: drawn.height + padding * 2)
 
         let data = NSMutableData()
@@ -371,12 +372,17 @@ enum PrintController {
         width: CGFloat,
         resolvedInlineImages: [String: Image] = [:]
     ) -> AnyView {
-        AnyView(
+        // Margins scale with the type so the printed page keeps the screen's
+        // proportions: the theme's margins are absolute points, so at 0.59×
+        // type they would otherwise print ~1.7× looser than the window shows.
+        let typeScale = printTypeScale(contentWidth: width, theme: theme)
+        return AnyView(
             PrintBlockView(
                 markdown: markdown,
                 mermaidImage: mermaidImage,
                 theme: theme,
-                scale: printTypeScale(contentWidth: width, theme: theme),
+                scale: typeScale,
+                marginScale: typeScale,
                 baseURL: baseURL
             )
             .frame(width: width, alignment: .topLeading)
@@ -399,8 +405,9 @@ enum PrintController {
         container.jobTitle = request.jobTitle
 
         // Screen rhythm: LazyVStack spacing 8 + each block's 2pt vertical
-        // hover padding × 2.
-        let spacing: CGFloat = 12
+        // hover padding × 2 — scaled with the type so the printed gutters keep
+        // the screen's proportions.
+        let spacing: CGFloat = 12 * printTypeScale(contentWidth: contentWidth, theme: request.theme)
         var y: CGFloat = 0
         func append(_ page: BlockPage) {
             let frame = NSRect(x: 0, y: y, width: contentWidth, height: ceil(page.size.height))
@@ -412,6 +419,7 @@ enum PrintController {
             y += frame.height + spacing
         }
 
+        let typeScale = printTypeScale(contentWidth: contentWidth, theme: request.theme)
         for (idx, block) in request.blocks.enumerated() {
             if idx == 0, let frontmatter = request.frontmatter {
                 // Block 0 is the metadata header: a properties table on
@@ -422,7 +430,8 @@ enum PrintController {
                     FrontmatterTableView(
                         rows: frontmatter,
                         theme: request.theme,
-                        fontScale: printTypeScale(contentWidth: contentWidth, theme: request.theme)
+                        fontScale: typeScale,
+                        paddingScale: typeScale
                     )
                         .frame(width: contentWidth, alignment: .topLeading)
                         .environment(\.colorScheme, request.theme.isDark ? .dark : .light)
@@ -573,8 +582,12 @@ private struct PrintBlockView: View {
     /// `PrintController.printTypeScale(_:theme:)` — body/heading/code type
     /// size for paper. Fixed (never derived from the screen's
     /// `themes.fontScale`) so printed output doesn't depend on the reader's
-    /// on-screen zoom. A
+    /// on-screen zoom.
     let scale: CGFloat
+    /// The same factor applied to the theme's absolute point margins, so the
+    /// printed rhythm stays proportional to the type — i.e. it looks like the
+    /// window does, rather than 1.7× looser than it.
+    let marginScale: CGFloat
     let baseURL: URL?
 
     var body: some View {
@@ -589,13 +602,13 @@ private struct PrintBlockView: View {
                     contentMode: .fit
                 )
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 18 * marginScale)
+                .padding(.vertical, 12 * marginScale)
                 .background(theme.resolvedCodePalette.background ?? theme.secondaryBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         } else {
             Markdown(markdown)
-                .markdownTheme(theme.markdownTheme(scale: scale, forPrint: true))
+                .markdownTheme(theme.markdownTheme(scale: scale, forPrint: true, marginScale: marginScale))
                 .markdownCodeSyntaxHighlighter(.mdv(theme: theme, scale: scale))
                 .markdownInlineImageProvider(MathInlineImageProvider())
                 .markdownImageProvider(LocalImageProvider(
