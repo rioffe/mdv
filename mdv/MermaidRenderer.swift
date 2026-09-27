@@ -487,12 +487,12 @@ struct MDVMermaidRenderKey: Hashable {
     let style: MermaidRenderStyle
     let scale: CGFloat
 
-    init(source: String, theme: MDVTheme, style: MermaidRenderStyle) {
+    init(source: String, theme: MDVTheme, style: MermaidRenderStyle, scale: CGFloat? = nil) {
         self.sourceHash = source.hashValue
         self.sourceLength = source.count
         self.themeID = theme.id
         self.style = style
-        self.scale = NSScreen.main?.backingScaleFactor ?? 2
+        self.scale = scale ?? NSScreen.main?.backingScaleFactor ?? 2
     }
 
     var cacheID: NSString {

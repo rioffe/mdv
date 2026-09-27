@@ -71,6 +71,14 @@ enum PrintController {
     /// 6 costs 982 KB for test-docs/math.md, 12 costs 1.27 MB.
     private static let printMathDensity: CGFloat = 12
 
+    /// Pixels per point for a printed *diagram*.
+    ///
+    /// Lower than the formula density on purpose: a diagram is a full-column
+    /// picture, so its pixel count grows with the square — at the formula's 12
+    /// a Gantt chart lands at 1731 ppi and 11.7 MB for one page. 4 is 288 ppi,
+    /// the usual print standard, and puts the same chart at ~2 MB.
+    private static let printDiagramDensity: CGFloat = 4
+
     /// TEMP SELF-TEST (delete): run the full print pipeline — pre-pass,
     /// container, AppKit pagination — and write the result to a PDF file
     /// instead of presenting a panel.
@@ -427,24 +435,38 @@ enum PrintController {
             .flatMap(MermaidRenderStyle.init(rawValue:)) ?? .document
         let contentWidth = printInfo.paperSize.width
             - printInfo.leftMargin - printInfo.rightMargin
-        // The block view pads the diagram 18pt per side; render the web page
-        // at the width the image actually displays at.
-        let diagramWidth = max(contentWidth - 36, 1)
+        let typeScale = printTypeScale(contentWidth: contentWidth, theme: request.theme)
+        // The block view insets the diagram 18pt per side (scaled with the rest
+        // of the print margins), so this is the width the image is drawn at —
+        // render at exactly that, at `printMathDensity`, and it lands 1:1 with
+        // the pixels a printer can resolve. Screen-sized rasters (2 px/pt) are
+        // what made a printed Gantt chart and typeset node labels look soft.
+        let diagramWidth = max(contentWidth - 2 * 18 * typeScale, 1)
         var result = PrePass()
 
         for (idx, block) in request.blocks.enumerated() {
             if let source = mermaidSource(fromFencedBlock: block) {
                 if isBeautifulMermaidSupported(source) {
-                    let key = MDVMermaidRenderKey(source: source, theme: request.theme, style: style)
-                    if let image = await MDVMermaidImageCache.shared.image(
+                    let key = MDVMermaidRenderKey(
+                        source: source, theme: request.theme, style: style, scale: printDiagramDensity
+                    )
+                    // `raster` at the print scale, rather than `image` (which is
+                    // pinned to 2× for PNG export) — the layout is cached, only
+                    // the pixels are redrawn.
+                    if let prepared = await MDVMermaidImageCache.shared.prepared(
                         source: source, theme: request.theme, style: style, key: key
+                    ), let image = await MDVMermaidImageCache.shared.raster(
+                        prepared, key: key, width: diagramWidth
                     ) {
                         result.images[idx] = image
                     } else {
                         result.failed.insert(idx)
                     }
                 } else if let image = await MermaidWebRenderer.image(
-                    source: source, theme: request.theme, width: diagramWidth
+                    source: source,
+                    theme: request.theme,
+                    width: diagramWidth,
+                    density: printDiagramDensity
                 ) {
                     // Gantt, pie, & co.: the bundled mermaid.js path, rasterized
                     // offscreen so it prints like a native diagram rather than
