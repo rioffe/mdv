@@ -2280,7 +2280,7 @@ struct ContentView: View {
             // Math spans become image references first; smartening runs
             // after so it never touches LaTeX (it already skips `](…)` URLs).
             let withMath = MathMarkdown.rewrite(
-                block,
+                RawHTMLImages.rewrite(block),
                 fontSize: themes.current.baseFontSize * themes.fontScale,
                 headingSizeEms: themes.current.headingSizeEms,
                 color: NSColor(themes.current.text)
@@ -2288,7 +2288,7 @@ struct ContentView: View {
             Markdown(smartTypographyEnabled ? smartenMarkdown(withMath) : withMath)
                 .markdownTheme(themes.current.markdownTheme(scale: themes.fontScale))
                 .markdownCodeSyntaxHighlighter(.mdv(theme: themes.current, scale: themes.fontScale))
-                .markdownInlineImageProvider(MathInlineImageProvider())
+                .markdownInlineImageProvider(MathInlineImageProvider(baseURL: currentDocumentDirectory))
                 .markdownImageProvider(LocalImageProvider(
                     baseURL: currentDocumentDirectory,
                     loadRemoteImages: loadRemoteImages
@@ -3743,6 +3743,12 @@ struct LocalImageProvider: ImageProvider {
         if resolved.scheme == MathSpec.scheme, let spec = MathSpec(url: resolved) {
             // A `$$…$$` paragraph, rewritten by MathMarkdown.
             MathDisplayView(spec: spec)
+        } else if resolved.scheme == HTMLImageSpec.scheme, let spec = HTMLImageSpec(url: resolved) {
+            // A raw `<img>` tag, rewritten by RawHTMLImages. Its `src` then
+            // behaves exactly like any other image URL: same resolution, same
+            // remote-image gate, same placeholders — only the size the tag
+            // asked for rides along.
+            htmlImage(spec, target: spec.resolvedURL(baseURL: baseURL))
         } else if resolved.scheme == "data" {
             dataURIImage(resolved)
         } else if resolved.isFileURL {
@@ -3782,6 +3788,20 @@ struct LocalImageProvider: ImageProvider {
                 .frame(maxWidth: size.width > 0 ? size.width : nil)
         } else {
             missingImagePlaceholder(for: url.lastPathComponent)
+        }
+    }
+
+    @ViewBuilder
+    private func htmlImage(_ spec: HTMLImageSpec, target: URL) -> some View {
+        if target.isFileURL {
+            HTMLImageView(spec: spec, image: NSImage(contentsOf: target))
+        } else if target.scheme == "data" {
+            HTMLImageView(spec: spec, image: decodeDataURIImage(target))
+        } else if loadRemoteImages {
+            HTMLImageView(spec: spec, image: nil).frame(width: spec.width, height: spec.height)
+            RemoteImageView(url: target)
+        } else {
+            blockedRemoteImagePlaceholder(for: target)
         }
     }
 

@@ -458,7 +458,7 @@ enum PrintController {
     ) -> BlockSource {
         let source = mermaidFailed ? retagMermaidFence(block) : block
         let rewritten = MathMarkdown.rewritten(
-            source,
+            RawHTMLImages.rewrite(source),
             fontSize: theme.baseFontSize * typeScale,
             headingSizeEms: theme.headingSizeEms,
             color: NSColor(theme.text),
@@ -918,7 +918,7 @@ private struct PrintBlockView: View {
             Markdown(markdown)
                 .markdownTheme(theme.markdownTheme(scale: scale, forPrint: true, marginScale: marginScale))
                 .markdownCodeSyntaxHighlighter(.mdv(theme: theme, scale: scale))
-                .markdownInlineImageProvider(MathInlineImageProvider())
+                .markdownInlineImageProvider(MathInlineImageProvider(baseURL: baseURL))
                 .markdownImageProvider(LocalImageProvider(
                     baseURL: baseURL,
                     loadRemoteImages: false

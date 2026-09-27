@@ -646,7 +646,21 @@ private struct SendableRendered: @unchecked Sendable {
 /// Inline images: math URLs are typeset here, everything else goes to
 /// MarkdownUI's default loader as before.
 struct MathInlineImageProvider: InlineImageProvider {
+    /// The document's directory, so a raw `<img src="…">` written inline
+    /// resolves like any other relative image. MarkdownUI hands inline images
+    /// to the provider already-resolved, but only knows the base URL it was
+    /// told about, and a rewritten tag's `src` rides inside its own URL.
+    var baseURL: URL? = nil
+
     func image(with url: URL, label: String) async throws -> Image {
+        if let spec = HTMLImageSpec(url: url) {
+            // A raw `<img>` in the middle of a paragraph: MarkdownUI draws
+            // inline images itself, so hand it the loaded file.
+            guard let image = NSImage(contentsOf: spec.resolvedURL(baseURL: baseURL)) else {
+                throw URLError(.fileDoesNotExist)
+            }
+            return Image(nsImage: image)
+        }
         guard let spec = MathSpec(url: url) else {
             return try await DefaultInlineImageProvider.default.image(with: url, label: label)
         }
