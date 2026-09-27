@@ -247,6 +247,74 @@ struct MermaidWebView: NSViewRepresentable {
     }
 }
 
+/// The height handshake for one offscreen mermaid render.
+///
+/// Deliberately not actor-isolated: the report arrives on WebKit's message
+/// thread, the wait is started from the main actor, and the timeout and
+/// cancellation paths run wherever those land — so the state is lock-guarded
+/// instead of pretending to belong to an actor. (It sits outside
+/// `MermaidWebRenderer` because a type nested in a `@MainActor` type inherits
+/// that isolation, which is precisely what the cancellation handler cannot
+/// honour.)
+/// `@unchecked Sendable`: every mutable field is read and written under
+/// `lock`, which is what lets the timeout block hold it across the queue hop.
+private final class MermaidHeightReport: @unchecked Sendable {
+    private let lock = NSLock()
+    private var token = 0
+    /// The latest height, or a negative sentinel for a failed render, so a
+    /// report that lands before anyone waits is not lost.
+    private var value: CGFloat?
+    private var pending: (token: Int, cont: CheckedContinuation<CGFloat?, Never>)?
+
+    private var reported: CGFloat? {
+        lock.lock(); defer { lock.unlock() }
+        return value
+    }
+
+    /// Records a height (`nil` = the page failed) and resumes a waiter.
+    func record(_ height: CGFloat?) {
+        lock.lock()
+        value = height ?? -1
+        let waiter = pending
+        pending = nil
+        lock.unlock()
+        waiter?.cont.resume(returning: height)
+    }
+
+    func wait(timeout: TimeInterval) async -> CGFloat? {
+        if let reported { return reported < 0 ? nil : reported }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<CGFloat?, Never>) in
+                lock.lock()
+                let myToken = token &+ 1
+                token = myToken
+                pending = (token: myToken, cont: cont)
+                lock.unlock()
+                // A page whose render never settles (broken JS, a type the
+                // bundled mermaid.js rejects) must not hang the print job.
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+                    self.giveUp(token: myToken)
+                }
+            }
+        } onCancel: {
+            self.giveUp(token: nil)
+        }
+    }
+
+    /// Resumes the installed waiter with `nil` — the timeout passes its own
+    /// token (so it cannot steal a later wait), cancellation passes none.
+    private func giveUp(token expected: Int?) {
+        lock.lock()
+        guard let waiter = pending, expected == nil || waiter.token == expected else {
+            lock.unlock()
+            return
+        }
+        pending = nil
+        lock.unlock()
+        waiter.cont.resume(returning: nil)
+    }
+}
+
 // MARK: - One-shot print rendering
 
 /// Renders a diagram once through the bundled mermaid.js for the print
@@ -313,47 +381,20 @@ enum MermaidWebRenderer {
     }
 
     private final class SnapshotHandler: NSObject, WKScriptMessageHandler {
-        private var pending: (token: Int, cont: CheckedContinuation<CGFloat?, Never>)?
-        private var token = 0
-        /// A height reported before `waitForHeight` installed its
-        /// continuation, or a negative sentinel for a failed render.
-        private var reported: CGFloat?
+        private let height = MermaidHeightReport()
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "mermaidHeight",
                   let body = message.body as? [String: Any] else { return }
             if let ok = body["ok"] as? Bool, ok, let h = body["height"] as? Double, h > 0 {
-                reported = CGFloat(h)
+                height.record(CGFloat(h))
             } else {
-                reported = -1
-            }
-            if let pending {
-                self.pending = nil
-                pending.cont.resume(returning: (reported ?? 0) < 0 ? nil : reported)
+                height.record(nil)
             }
         }
 
         func waitForHeight(timeout: TimeInterval) async -> CGFloat? {
-            if let reported { return reported < 0 ? nil : reported }
-            return await withTaskCancellationHandler {
-                await withCheckedContinuation { (cont: CheckedContinuation<CGFloat?, Never>) in
-                    let myToken = self.token &+ 1
-                    self.pending = (token: myToken, cont: cont)
-                    // A page whose render never settles (broken JS, a type
-                    // the bundled mermaid.js rejects) must not hang the
-                    // print job.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-                        guard self.pending?.token == myToken else { return }
-                        self.pending = nil
-                        cont.resume(returning: nil)
-                    }
-                }
-            } onCancel: {
-                if let pending = self.pending {
-                    self.pending = nil
-                    pending.cont.resume(returning: nil)
-                }
-            }
+            await height.wait(timeout: timeout)
         }
 
         func snapshot(_ webView: WKWebView) async -> CGImage? {

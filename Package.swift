@@ -30,6 +30,8 @@ let package = Package(
                 "Fonts",
                 "Grammars",
                 "Help.md",
+                // Bundled by build.sh (downloaded, not committed).
+                "mermaid.min.js",
             ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
@@ -82,7 +84,13 @@ let package = Package(
                 "toml/parser.c", "toml/scanner.c",
                 "yaml/parser.c", "yaml/scanner.cc",
             ],
-            publicHeadersPath: "include"
+            publicHeadersPath: "include",
+            cSettings: [
+                // tree-sitter's generated scanners do size_t → unsigned
+                // narrowing in a few places (python, yaml). Generated code we
+                // do not patch — see mdv/Grammars/README.md.
+                .unsafeFlags(["-Wno-shorten-64-to-32"]),
+            ]
         ),
     ],
     cxxLanguageStandard: .cxx17

@@ -1,6 +1,12 @@
 import Foundation
-@_implementationOnly import cmark_gfm
-@_implementationOnly import cmark_gfm_extensions
+// mdv patch (see Vendor/MarkdownUI/README.md): upstream marks these
+// `@_implementationOnly`, which the compiler warns about without library
+// evolution ("safely use '@_implementationOnly' without library evolution…")
+// and which in turn warns on every `cmark_node_type` stored property below.
+// mdv builds the module statically with no library evolution, so plain
+// imports are both correct and quiet.
+import cmark_gfm
+import cmark_gfm_extensions
 
 extension Array where Element == BlockNode {
   init(markdown: String) {

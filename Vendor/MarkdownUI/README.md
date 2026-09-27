@@ -31,4 +31,19 @@ doc images) is not vendored either.
   untouched: the `.task` still loads images, and a loaded image wins over a
   supplied one for the same key.
 
+- `Parser/MarkdownParser.swift`: the two `@_implementationOnly import`
+  lines for `cmark_gfm` / `cmark_gfm_extensions` become plain imports. The
+  compiler warns about `@_implementationOnly` without library evolution
+  ("safely use '@_implementationOnly' without library evolution…"), and an
+  implementation-only import in turn warns on each `cmark_node_type` stored
+  property in that file. mdv links the module statically with no library
+  evolution, so nothing is hidden by dropping it — and the build is quiet.
+
+- `Theme/TextStyle/Styles/FontPropertiesAttribute.swift`: adds
+  `import SwiftUI`. `SwiftUIAttributes` — referenced by the
+  `MarkdownUIAttributes` scope the file declares — comes from SwiftUICore and
+  reached the file only through SwiftUI's re-export, so the compiler warned
+  that a declaration member used a type from a module the file never
+  imported.
+
 Keep this list in sync when re-vendoring from a newer upstream release.

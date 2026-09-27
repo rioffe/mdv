@@ -1,4 +1,10 @@
 import Foundation
+// mdv patch (see Vendor/MarkdownUI/README.md): `SwiftUIAttributes` (used by
+// the `MarkdownUIAttributes` scope below) lives in SwiftUICore and reaches
+// this file only through SwiftUI's re-export, which upstream never imports
+// here — the compiler warns that the declaration member uses a type from an
+// unimported module.
+import SwiftUI
 
 enum FontPropertiesAttribute: AttributedStringKey {
   typealias Value = FontProperties
