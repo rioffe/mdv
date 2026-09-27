@@ -149,12 +149,28 @@ enum PrintController {
     private struct PrePass {
         var images: [Int: NSImage] = [:]
         var failed: Set<Int> = []
-        /// Typeset LaTeX, per block and keyed by image source. Handed to the
-        /// view tree through `\.resolvedInlineImages` — see `blockRoot`.
-        var math: [Int: [String: Image]] = [:]
+        /// Typeset LaTeX, per block: same-size marker rectangles for the view
+        /// tree (`\.resolvedInlineImages`, so the layout reserves each
+        /// formula's place) plus the vector images to draw into those places
+        /// afterwards — see `vectorizeFormulas`.
+        var math: [Int: MathOverlay] = [:]
         /// Blocks that are nothing but a `$$…$$` formula, drawn as vector
         /// glyphs (see `standaloneFormula`).
         var formulaPages: [Int: BlockPage] = [:]
+    }
+
+    /// A block's inline formulas: the images the page lays out with, and the
+    /// vector versions drawn over them afterwards.
+    private struct MathOverlay {
+        /// Bitmap images keyed by image source. The page is laid out with
+        /// these — they are what the reader gets if the overlay cannot run.
+        let images: [String: Image]
+        /// Solid background-coloured images of exactly the same size, used to
+        /// lay the *finished* page out: invisible, and a few bytes each where
+        /// a formula bitmap is kilobytes.
+        let placeholders: [String: Image]
+        /// The formulas to draw into their places, in document order.
+        let formulas: [MathRendered]
     }
 
     /// Everything the print view tree needs for one block's markdown.
@@ -228,6 +244,156 @@ enum PrintController {
               let document = CGPDFDocument(provider),
               let page = document.page(at: 1) else { return nil }
         return BlockPage(document: document, page: page, size: size)
+    }
+
+    /// A solid image of `size`, used to reserve a formula's place on a page
+    /// that will have the formula drawn into it afterwards. Painted the page's
+    /// own background — the colour the print container fills with — so it is
+    /// invisible whatever the theme paints.
+    private static func blankImage(size: CGSize, background: NSColor) -> NSImage {
+        NSImage(size: NSSize(width: max(size.width, 1), height: max(size.height, 1)), flipped: false) { rect in
+            background.setFill()
+            rect.fill()
+            return true
+        }
+    }
+
+    /// Draws each inline formula over the bitmap the page was laid out with.
+    ///
+    /// Why this dance: SwiftUI draws inline images as bitmaps. Any `NSImage`
+    /// handed to `Text(Image)` is rasterized — measured, SwiftMath's
+    /// drawing-handler image and one backed by a PDF page both land at 72 ppi,
+    /// and only a pre-baked bitmap keeps its own density — and `Text` ignores
+    /// `AttributedString` attachments outright, so an inline `$…$` cannot be
+    /// vector by itself. So the page is laid out with the bitmap in place, the
+    /// image placements are read back out of it, and SwiftMath's drawing-handler
+    /// image is drawn over each one — where a PDF context keeps the glyphs.
+    ///
+    /// Returns nil — leaving the page exactly as rendered, bitmaps and all —
+    /// when the placements do not account for every formula, or a placement
+    /// does not match the formula it should hold.
+    private static func formulaPlacements(
+        in page: BlockPage,
+        overlay: MathOverlay?
+    ) -> [CGRect]? {
+        guard let overlay, !overlay.formulas.isEmpty,
+              let placements = imagePlacements(in: page.page) else { return nil }
+        // The page draws images in document order, so walk both lists in that
+        // order and pair them by size. A placement matching no formula is some
+        // other image in the block and is left alone.
+        var rects: [CGRect] = []
+        var remaining = overlay.formulas
+        for placement in placements {
+            guard let match = remaining.firstIndex(where: { formula in
+                let size = formula.vectorImage.size
+                return abs(placement.rect.width - size.width) <= 2
+                    && abs(placement.rect.height - size.height) <= 2
+            }) else { continue }
+            rects.append(placement.rect)
+            remaining.remove(at: match)
+        }
+        guard remaining.isEmpty, rects.count == overlay.formulas.count else { return nil }
+        return rects
+    }
+
+    /// Draws the formulas into the page that was laid out with placeholders
+    /// standing in for them, where a PDF context keeps them vector.
+    private static func drawFormulas(
+        _ formulas: [MathRendered],
+        at rects: [CGRect],
+        on page: BlockPage
+    ) -> BlockPage? {
+        guard rects.count == formulas.count else { return nil }
+        let data = NSMutableData()
+        guard let consumer = CGDataConsumer(data: data as CFMutableData) else { return nil }
+        var mediaBox = CGRect(origin: .zero, size: page.size)
+        guard let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        ctx.beginPDFPage(nil)
+        ctx.drawPDFPage(page.page)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        for (rect, formula) in zip(rects, formulas) {
+            formula.vectorImage.draw(in: rect)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.endPDFPage()
+        ctx.closePDF()
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider),
+              let composed = document.page(at: 1) else { return nil }
+        return BlockPage(document: document, page: composed, size: page.size)
+    }
+
+    /// Every image the page draws, in draw order, as a rect in page
+    /// coordinates plus the image's own pixel size.
+    ///
+    /// Read out of the content stream rather than found by searching: the
+    /// stream already records the order the images were drawn in, which is the
+    /// order they appear in the document, so a formula can be paired with its
+    /// placement without inferring anything from where a rectangle happens to
+    /// be.
+    private static func imagePlacements(in page: CGPDFPage) -> [(rect: CGRect, pixels: CGSize)]? {
+        final class State {
+            var ctm = CGAffineTransform.identity
+            var stack: [CGAffineTransform] = []
+            var placements: [(rect: CGRect, pixels: CGSize)] = []
+            var xobjects: CGPDFDictionaryRef?
+        }
+        guard let pageDictionary = page.dictionary else { return nil }
+        var resources: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(pageDictionary, "Resources", &resources),
+              let resourcesDictionary = resources else { return nil }
+        var xobjects: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(resourcesDictionary, "XObject", &xobjects),
+              let xobjectDictionary = xobjects else { return nil }
+        let state = State()
+        state.xobjects = xobjectDictionary
+
+        guard let table = CGPDFOperatorTableCreate() else { return nil }
+        defer { CGPDFOperatorTableRelease(table) }
+        let info = Unmanaged.passUnretained(state).toOpaque()
+        CGPDFOperatorTableSetCallback(table, "q") { _, info in
+            let state = Unmanaged<State>.fromOpaque(info!).takeUnretainedValue()
+            state.stack.append(state.ctm)
+        }
+        CGPDFOperatorTableSetCallback(table, "Q") { _, info in
+            let state = Unmanaged<State>.fromOpaque(info!).takeUnretainedValue()
+            state.ctm = state.stack.popLast() ?? .identity
+        }
+        CGPDFOperatorTableSetCallback(table, "cm") { scanner, info in
+            let state = Unmanaged<State>.fromOpaque(info!).takeUnretainedValue()
+            var a = CGPDFReal(), b = CGPDFReal(), c = CGPDFReal()
+            var d = CGPDFReal(), e = CGPDFReal(), f = CGPDFReal()
+            guard CGPDFScannerPopNumber(scanner, &f), CGPDFScannerPopNumber(scanner, &e),
+                  CGPDFScannerPopNumber(scanner, &d), CGPDFScannerPopNumber(scanner, &c),
+                  CGPDFScannerPopNumber(scanner, &b), CGPDFScannerPopNumber(scanner, &a) else { return }
+            let transform = CGAffineTransform(a: a, b: b, c: c, d: d, tx: e, ty: f)
+            state.ctm = state.ctm.concatenating(transform)
+        }
+        CGPDFOperatorTableSetCallback(table, "Do") { scanner, info in
+            let state = Unmanaged<State>.fromOpaque(info!).takeUnretainedValue()
+            var name: UnsafePointer<CChar>?
+            guard CGPDFScannerPopName(scanner, &name), let name, let xobjects = state.xobjects else { return }
+            var stream: CGPDFStreamRef?
+            guard CGPDFDictionaryGetStream(xobjects, name, &stream), let stream,
+                  let dictionary = CGPDFStreamGetDictionary(stream) else { return }
+            var subtype: UnsafePointer<CChar>?
+            guard CGPDFDictionaryGetName(dictionary, "Subtype", &subtype),
+                  let subtype, String(cString: subtype) == "Image" else { return }
+            var width = CGPDFInteger(), height = CGPDFInteger()
+            CGPDFDictionaryGetInteger(dictionary, "Width", &width)
+            CGPDFDictionaryGetInteger(dictionary, "Height", &height)
+            state.placements.append((
+                rect: CGRect(x: 0, y: 0, width: 1, height: 1).applying(state.ctm),
+                pixels: CGSize(width: width, height: height)
+            ))
+        }
+        let stream = CGPDFContentStreamCreateWithPage(page)
+        defer { CGPDFContentStreamRelease(stream) }
+        let scanner = CGPDFScannerCreate(stream, table, info)
+        defer { CGPDFScannerRelease(scanner) }
+        CGPDFScannerScan(scanner)
+        return state.placements
     }
 
     /// Mirrors the screen pipeline's order (`ContentView.blockView`): math
@@ -314,11 +480,18 @@ enum PrintController {
             // so MarkdownUI would otherwise skip every inline image it hasn't
             // loaded — i.e. print the paragraph with its formulas missing.
             var images: [String: Image] = [:]
+            var placeholders: [String: Image] = [:]
+            var formulas: [MathRendered] = []
             for spec in source.specs {
                 let rendered = await MathImageCache.shared.rendered(for: spec)
                 images[spec.url] = Image(nsImage: rendered.image)
+                placeholders[spec.url] = Image(nsImage: blankImage(
+                    size: rendered.image.size,
+                    background: NSColor(request.theme.background)
+                ))
+                formulas.append(rendered)
             }
-            result.math[idx] = images
+            result.math[idx] = MathOverlay(images: images, placeholders: placeholders, formulas: formulas)
         }
         return result
     }
@@ -460,12 +633,38 @@ enum PrintController {
                 theme: request.theme,
                 baseURL: request.baseURL,
                 width: contentWidth,
-                resolvedInlineImages: prepass.math[idx] ?? [:]
+                resolvedInlineImages: prepass.math[idx]?.images ?? [:]
             )
             guard let render = renderBlockPDF(root: root, width: contentWidth) else {
                 continue
             }
-            append(BlockPage(document: render.document, page: render.page, size: render.size))
+            let page = BlockPage(document: render.document, page: render.page, size: render.size)
+            // Inline formulas print as vector: lay the page out with the bitmap
+            // formulas (which is also what a failure falls back to), read back
+            // where they landed, then lay the same page out with invisible
+            // placeholders and draw the formulas into those places.
+            var printed = page
+            if let overlay = prepass.math[idx],
+               let rects = formulaPlacements(in: page, overlay: overlay) {
+                let blank = blockRoot(
+                    markdown: source.markdown,
+                    mermaidImage: prepass.images[idx],
+                    theme: request.theme,
+                    baseURL: request.baseURL,
+                    width: contentWidth,
+                    resolvedInlineImages: overlay.placeholders
+                )
+                if let render = renderBlockPDF(root: blank, width: contentWidth),
+                   abs(render.size.height - page.size.height) <= 1,
+                   let composed = drawFormulas(
+                       overlay.formulas,
+                       at: rects,
+                       on: BlockPage(document: render.document, page: render.page, size: render.size)
+                   ) {
+                    printed = composed
+                }
+            }
+            append(printed)
         }
         container.frame = NSRect(x: 0, y: 0, width: contentWidth, height: max(y - spacing, 1))
         return container
