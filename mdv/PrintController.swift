@@ -56,12 +56,20 @@ enum PrintController {
         return min(1, contentWidth / screenColumn)
     }
 
-    /// Pixels per point to bake printed formulas at. The page stays vector
-    /// text, but SwiftUI rasterizes `Image(nsImage:)` even into a PDF context
-    /// (measured: 1 px/pt, i.e. 72 ppi, for a drawing-handler image), so this
-    /// is what decides how crisp a formula prints. 6 → 432 ppi, comfortably
-    /// above the ~300 ppi print norm; the screen keeps the display's scale.
-    private static let printMathDensity: CGFloat = 6
+    /// Pixels per point to bake the formulas that print as *images*.
+    ///
+    /// A standalone `$$…$$` block is drawn as vector glyphs (see
+    /// `standaloneFormula`) and needs none of this. Inline `$…$` cannot be:
+    /// MarkdownUI draws inline images with `Text(Image)`, and SwiftUI
+    /// rasterizes any `NSImage` handed to it at 1 px/pt — measured, both for
+    /// a drawing-handler image and for one backed by a PDF — so the only
+    /// lever for an inline formula is how many pixels the bitmap it embeds
+    /// carries. 12 → 864 ppi, which is above the 600 dpi most printers
+    /// actually resolve, so the printer downsamples rather than stretches.
+    /// Measured at 600 dpi output: 6 → 432 ppi gives p98 edge contrast 248,
+    /// 12 gives 270, 24 adds nothing (270) for 55% more bytes.
+    /// 6 costs 982 KB for test-docs/math.md, 12 costs 1.27 MB.
+    private static let printMathDensity: CGFloat = 12
 
     /// TEMP SELF-TEST (delete): run the full print pipeline — pre-pass,
     /// container, AppKit pagination — and write the result to a PDF file
