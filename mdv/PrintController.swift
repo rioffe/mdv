@@ -165,6 +165,9 @@ enum PrintController {
         /// Blocks that are nothing but a `$$…$$` formula, drawn as vector
         /// glyphs (see `standaloneFormula`).
         var formulaPages: [Int: BlockPage] = [:]
+        /// Mermaid blocks whose diagram came back as a PDF, so its labels print
+        /// as vector rather than as a raster of them (see `diagramPage`).
+        var diagramPages: [Int: BlockPage] = [:]
     }
 
     /// A block's inline formulas: the images the page lays out with, and the
@@ -189,6 +192,45 @@ enum PrintController {
         /// The block contained at least one `$…$` / `$$…$$` span, i.e. its
         /// laid-out content depends on async image resolution.
         var hasMath: Bool { !specs.isEmpty }
+    }
+
+    /// The printed page for a diagram block: the chrome the screen draws around
+    /// a diagram — the code-block background, the 18/12pt insets — with the
+    /// diagram itself drawn from its own PDF page and scaled to the printed
+    /// column, so its labels stay vector.
+    private static func diagramPage(
+        diagram: CGPDFPage,
+        diagramSize: CGSize,
+        width: CGFloat,
+        drawnWidth: CGFloat,
+        theme: MDVTheme,
+        typeScale: CGFloat
+    ) -> BlockPage? {
+        let verticalInset = 12 * typeScale
+        let scale = min(1, max(drawnWidth, 1) / max(diagramSize.width, 1))
+        let drawn = CGSize(width: diagramSize.width * scale, height: diagramSize.height * scale)
+        let size = CGSize(width: width, height: drawn.height + verticalInset * 2)
+
+        let data = NSMutableData()
+        guard let consumer = CGDataConsumer(data: data as CFMutableData) else { return nil }
+        var mediaBox = CGRect(origin: .zero, size: size)
+        guard let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        ctx.beginPDFPage(nil)
+        let background = NSColor(theme.resolvedCodePalette.background ?? theme.secondaryBackground)
+        background.setFill()
+        NSBezierPath(roundedRect: mediaBox, xRadius: 6, yRadius: 6).fill()
+        ctx.saveGState()
+        // Both pages are y-up, so the diagram is placed and scaled, not flipped.
+        ctx.translateBy(x: (width - drawn.width) / 2, y: size.height - verticalInset - drawn.height)
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.drawPDFPage(diagram)
+        ctx.restoreGState()
+        ctx.endPDFPage()
+        ctx.closePDF()
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider),
+              let page = document.page(at: 1) else { return nil }
+        return BlockPage(document: document, page: page, size: size)
     }
 
     /// A block that is nothing but one `$$…$$` formula, if that is what it is.
@@ -464,19 +506,50 @@ enum PrintController {
                     // the pixels are redrawn.
                     if let prepared = await MDVMermaidImageCache.shared.prepared(
                         source: source, theme: request.theme, style: style, key: key
-                    ), let image = await MDVMermaidImageCache.shared.raster(
-                        prepared, key: key, width: diagramLayoutWidth
                     ) {
-                        // Drawn smaller than it was laid out, so its labels come
-                        // out proportional to the printed type.
-                        image.size = NSSize(
-                            width: diagramWidth,
-                            height: image.size.height * typeScale
-                        )
-                        result.images[idx] = image
+                        if let rendered = MDVMermaidPipeline.pdf(prepared, width: diagramLayoutWidth),
+                           let page = diagramPage(
+                               diagram: rendered.page,
+                               diagramSize: rendered.size,
+                               width: contentWidth,
+                               // A native diagram has a natural size of its own,
+                               // so it prints scaled by the type factor —
+                               // uniformly, which is what keeps its proportions.
+                               drawnWidth: rendered.size.width * typeScale,
+                               theme: request.theme,
+                               typeScale: typeScale
+                           ) {
+                            result.diagramPages[idx] = page
+                        } else if let image = await MDVMermaidImageCache.shared.raster(
+                            prepared, key: key, width: diagramLayoutWidth
+                        ) {
+                            // Fallback: the bitmap, which still prints as a
+                            // diagram, just without vector labels.
+                            result.images[idx] = image
+                        } else {
+                            result.failed.insert(idx)
+                        }
                     } else {
                         result.failed.insert(idx)
                     }
+                } else if let rendered = await MermaidWebRenderer.pdf(
+                    source: source,
+                    theme: request.theme,
+                    width: diagramLayoutWidth
+                ), let page = diagramPage(
+                    diagram: rendered.page,
+                    diagramSize: rendered.size,
+                    width: contentWidth,
+                    // The web path is laid out at the screen's column width, so
+                    // drawing it at the printed column scales it by the type
+                    // factor without distorting anything.
+                    drawnWidth: diagramWidth,
+                    theme: request.theme,
+                    typeScale: typeScale
+                ) {
+                    // Gantt, pie, & co.: the bundled mermaid.js path, drawn from
+                    // a PDF of the page so its labels print as vector.
+                    result.diagramPages[idx] = page
                 } else if let image = await MermaidWebRenderer.image(
                     source: source,
                     theme: request.theme,
@@ -484,9 +557,7 @@ enum PrintController {
                     displayWidth: diagramWidth,
                     density: printDiagramDensity
                 ) {
-                    // Gantt, pie, & co.: the bundled mermaid.js path, rasterized
-                    // offscreen so it prints like a native diagram rather than
-                    // as its source.
+                    // Fallback: the raster, which still prints as a diagram.
                     result.images[idx] = image
                 } else {
                     result.failed.insert(idx)
@@ -653,7 +724,7 @@ enum PrintController {
                 continue
             }
 
-            if let page = prepass.formulaPages[idx] {
+            if let page = prepass.formulaPages[idx] ?? prepass.diagramPages[idx] {
                 append(page)
                 continue
             }

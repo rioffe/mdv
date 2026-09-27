@@ -833,14 +833,7 @@ enum MDVMermaidPipeline {
     /// final size instead of being drawn once and resampled, which is what
     /// keeps labels as sharp as the document text around them.
     static func rasterize(_ prepared: MDVMermaidPrepared, width: CGFloat, scale: CGFloat) -> NSImage? {
-        let natural = prepared.size
-        // The bitmap is exactly `displaySize(for:width:)` points — the same
-        // numbers the view uses for its frame — so it's shown 1:1. An
-        // off-by-one from floor(natural × fit) here was enough to make
-        // SwiftUI resample the whole diagram and soften every label.
         let size = displaySize(for: prepared, width: width)
-        let fitX = size.width / natural.width
-        let fitY = size.height / natural.height
         guard let ctx = CGContext(
             data: nil,
             width: Int(size.width * scale), height: Int(size.height * scale),
@@ -850,6 +843,42 @@ enum MDVMermaidPipeline {
         ) else { return nil }
         ctx.scaleBy(x: scale, y: scale)
         ctx.setAllowsFontSmoothing(true)
+        draw(prepared, in: ctx, size: size, scale: scale)
+        guard let cg = ctx.makeImage() else { return nil }
+        return NSImage(cgImage: cg, size: size)
+    }
+
+    /// The laid-out diagram as a PDF page, for print.
+    ///
+    /// Everything the renderer draws goes through CoreGraphics and CoreText, so
+    /// a PDF context keeps the labels as glyphs — the same trick as printed
+    /// formulas, and the reason a printed diagram's text stops looking soft
+    /// next to vector prose.
+    static func pdf(_ prepared: MDVMermaidPrepared, width: CGFloat) -> (document: CGPDFDocument, page: CGPDFPage, size: CGSize)? {
+        let size = displaySize(for: prepared, width: width)
+        let data = NSMutableData()
+        guard let consumer = CGDataConsumer(data: data as CFMutableData) else { return nil }
+        var mediaBox = CGRect(origin: .zero, size: size)
+        guard let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        ctx.beginPDFPage(nil)
+        draw(prepared, in: ctx, size: size, scale: 1)
+        ctx.endPDFPage()
+        ctx.closePDF()
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider),
+              let page = document.page(at: 1) else { return nil }
+        return (document, page, size)
+    }
+
+    /// Draws the diagram into `ctx`, which may be a bitmap or a PDF context.
+    private static func draw(_ prepared: MDVMermaidPrepared, in ctx: CGContext, size: CGSize, scale: CGFloat) {
+        let natural = prepared.size
+        // The drawing is exactly `displaySize(for:width:)` points — the same
+        // numbers the view uses for its frame — so it's shown 1:1. An
+        // off-by-one from floor(natural × fit) here was enough to make
+        // SwiftUI resample the whole diagram and soften every label.
+        let fitX = size.width / natural.width
+        let fitY = size.height / natural.height
         ctx.setShouldSmoothFonts(true)
 
         // The library draws y-down. Flip once here instead of flipping the
@@ -893,9 +922,6 @@ enum MDVMermaidPipeline {
             }
             NSGraphicsContext.restoreGraphicsState()
         }
-
-        guard let cg = ctx.makeImage() else { return nil }
-        return NSImage(cgImage: cg, size: size)
     }
 
     // MARK: LaTeX in labels

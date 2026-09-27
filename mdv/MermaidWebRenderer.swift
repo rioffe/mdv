@@ -347,6 +347,60 @@ enum MermaidWebRenderer {
     /// the result is drawn at; print lays a diagram out at the width the
     /// screen would give it and draws it smaller, exactly as it does with type
     /// and with formulas.
+    /// The diagram as a PDF *page*, for print: WebKit keeps the page's text as
+    /// text, so a printed diagram drawn from this is vector — crisp at any
+    /// zoom, where a snapshot is a fixed resolution and its small labels read
+    /// as fuzzy next to vector prose.
+    ///
+    /// `width` is the layout width, exactly as in `image(...)`.
+    static func pdf(
+        source: String,
+        theme: MDVTheme,
+        width: CGFloat
+    ) async -> (document: CGPDFDocument, page: CGPDFPage, size: CGSize)? {
+        guard let rendered = await renderToPDF(source: source, theme: theme, width: max(width, 1)) else { return nil }
+        return rendered
+    }
+
+    private static func renderToPDF(
+        source: String,
+        theme: MDVTheme,
+        width: CGFloat
+    ) async -> (document: CGPDFDocument, page: CGPDFPage, size: CGSize)? {
+        let config = WKWebViewConfiguration()
+        let handler = SnapshotHandler()
+        config.userContentController.add(handler, name: "mermaidHeight")
+        let window = RenderWindow(
+            contentRect: CGRect(x: 0, y: 0, width: width, height: 400),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 400), configuration: config)
+        window.contentView = webView
+        window.makeKeyAndOrderFront(nil)
+        webView.loadHTMLString(
+            MermaidWebView.buildHTML(source: source, theme: theme, chrome: false),
+            baseURL: nil
+        )
+        let height = await handler.waitForHeight(timeout: 5)
+        guard let height, height > 0 else {
+            window.close()
+            return nil
+        }
+        webView.frame.size = NSSize(width: width, height: height)
+        window.setContentSize(NSSize(width: width, height: height))
+        try? await Task.sleep(for: .milliseconds(200))
+        let data = await handler.pdf(webView, rect: CGRect(x: 0, y: 0, width: width, height: height))
+        window.close()
+        guard let data,
+              let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider),
+              let page = document.page(at: 1) else { return nil }
+        return (document, page, CGSize(width: width, height: height))
+    }
+
     static func image(
         source: String,
         theme: MDVTheme,
@@ -429,6 +483,17 @@ enum MermaidWebRenderer {
 
         func waitForHeight(timeout: TimeInterval) async -> CGFloat? {
             await height.wait(timeout: timeout)
+        }
+
+        /// The page as a PDF of `rect` — vector text and all.
+        func pdf(_ webView: WKWebView, rect: CGRect) async -> Data? {
+            await withCheckedContinuation { continuation in
+                let config = WKPDFConfiguration()
+                config.rect = rect
+                webView.createPDF(configuration: config) { result in
+                    continuation.resume(returning: try? result.get())
+                }
+            }
         }
 
         func snapshot(_ webView: WKWebView, width: CGFloat) async -> CGImage? {
