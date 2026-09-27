@@ -48,6 +48,15 @@ history sidebar with the rest.
   before the keyword to verify the native dispatcher still finds
   it. If anything in here renders as the "could not be rendered"
   plate, the type-detector is at fault.
+- [frontmatter.md](frontmatter.md) — a YAML metadata header at the top
+  of a file, with the folded scalars, sequences, and nested mappings
+  real headers use. Three companions cover the rest of the family:
+  [frontmatter-ellipsis-close.md](frontmatter-ellipsis-close.md) (`...`
+  closer, blank line inside the header),
+  [frontmatter-toml.md](frontmatter-toml.md) (`+++` fences, multi-line
+  array), and [frontmatter-negative.md](frontmatter-negative.md), which
+  opens with a genuine thematic break and must keep rendering as
+  ordinary prose.
 
 ## Quick checklist
 
